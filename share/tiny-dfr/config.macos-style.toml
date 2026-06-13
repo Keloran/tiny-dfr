@@ -1,0 +1,128 @@
+# macOS-style configuration for tiny-dfr
+# This provides a macOS-like dashboard by default with system stats
+# Press FN to access F-keys. Press the settings icon to access media controls.
+# Copy this to /etc/tiny-dfr/config.toml to use it.
+#
+# Button Commands:
+# Buttons can execute shell commands when pressed by adding: Command = "your-command"
+# Example: { Icon = "window", ActiveWorkspace = true, Command = "hyprctl dispatch workspace 1" }
+
+# Default layer to show on startup
+# Options: "SystemInfo", "FKeys", "Media"
+DefaultLayer = "SystemInfo"
+
+# Show button outlines for clarity
+ShowButtonOutlines = true
+
+# Pixel shift for screen longevity (optional)
+EnablePixelShift = false
+
+# Font settings
+FontTemplate = ":bold"
+
+# Brightness settings
+AdaptiveBrightness = true
+ActiveBrightness = 128
+
+# FN has a fixed meaning in this config: show F-keys while held.
+DoublePressSwitchLayers = 0
+
+# ESC is configurable. If enabled, the system info layout is:
+#   esc, settings, cpu, mem, title, workspace, battery, clock
+# If disabled, the system info layout is:
+#   settings, cpu, mem, title, workspace, battery, clock
+ShowEscKey = false
+
+# Keep root privileges so Hyprland IPC remains accessible when tiny-dfr is
+# launched with sudo while Hyprland runs as your user.
+DropPrivileges = false
+
+# SystemInfoLayerKeys = Default dashboard view (shown without FN pressed)
+# This shows system information like macOS Touch Bar
+SystemInfoLayerKeys = [
+    # Switch to media controls
+    { Icon = "settings", LayerToggle = "settings", Action = [], Stretch = 1 },
+
+    # CPU usage display
+    # Optional: Add Command to execute when pressed. Examples:
+    #   Command = "kitty htop"                                  # Open htop in kitty terminal
+    #   Command = "alacritty -e htop"                           # Open htop in alacritty
+    { Icon = "cpu", CpuUsage = true, Action = [], Stretch = 2 },
+    
+    # Memory usage display
+    # Optional: Add Command to execute when pressed. Examples:
+    #   Command = "kitty htop"                                  # Open htop in kitty terminal
+    { Icon = "memory", MemoryUsage = true, Action = [], Stretch = 2 },
+    
+    # Active window title from Hyprland.
+    # Increase this Stretch and/or reduce ActiveWorkspace Stretch for a wider title box.
+    { ActiveWindow = true, Action = [], Stretch = 5 },
+    
+    # Current workspace/desktop from Hyprland.
+    # Increase this if you use long workspace names; keep it low for a wider title box.
+    # Optional: Add Command to execute when pressed. Examples:
+    #   Command = "hyprctl dispatch hymission:toggle"           # Toggle hymission mission control
+    #   Command = "hyprctl dispatch overview:toggle"            # Toggle overview plugin
+    #   Command = "hyprctl dispatch workspace 1"                # Switch to workspace 1
+    #   Command = "rofi -show window"                           # Show rofi window switcher
+    { Icon = "window", ActiveWorkspace = true, Action = [], Stretch = 1 },
+    
+    # Battery status
+    # Optional: Add Command to execute when pressed. Examples:
+    #   Command = "/usr/share/tiny-dfr/cycle-power-profile.sh" # Cycle: power-saver -> balanced -> performance
+    #   Command = "powerprofilesctl set power-saver"            # Set power saver mode
+    #   Command = "powerprofilesctl set balanced"               # Set balanced mode
+    #   Command = "powerprofilesctl set performance"            # Set performance mode
+    #   Command = "gnome-control-center power"                  # Open power settings
+    { Battery = "both", Action = [], Stretch = 2 },
+    
+    # Current time
+    { Time = "24hr", Action = [], Stretch = 2 }
+]
+
+# PrimaryLayerKeys = FN layer (shown when FN is pressed)
+# This layer contains F-keys
+PrimaryLayerKeys = [
+    { Text = "F1",  Action = "F1"  },
+    { Text = "F2",  Action = "F2"  },
+    { Text = "F3",  Action = "F3"  },
+    { Text = "F4",  Action = "F4"  },
+    { Text = "F5",  Action = "F5"  },
+    { Text = "F6",  Action = "F6"  },
+    { Text = "F7",  Action = "F7"  },
+    { Text = "F8",  Action = "F8"  },
+    { Text = "F9",  Action = "F9"  },
+    { Text = "F10", Action = "F10" },
+    { Text = "F11", Action = "F11" },
+    { Text = "F12", Action = "F12" }
+]
+
+# MediaLayerKeys = Media controls layer (shown after pressing settings icon)
+# Press < to return to the system info screen
+MediaLayerKeys = [
+    { LayerToggle = "<", Action = [], Stretch = 1 },
+
+    # Brightness controls
+    { Icon = "brightness_low",  Action = "BrightnessDown" },
+    { Icon = "brightness_high", Action = "BrightnessUp"   },
+    
+    # Microphone
+    { Icon = "mic_off",         Action = "MicMute"        },
+    
+    # Search
+    { Icon = "search",          Action = "Search"         },
+    
+    # Keyboard backlight
+    { Icon = "backlight_low",   Action = "IllumDown"      },
+    { Icon = "backlight_high",  Action = "IllumUp"        },
+    
+    # Media controls
+    { Icon = "fast_rewind",     Action = "PreviousSong"   },
+    { Icon = "play_pause",      Action = "PlayPause"      },
+    { Icon = "fast_forward",    Action = "NextSong"       },
+    
+    # Volume controls
+    { Icon = "volume_off",      Action = "Mute"           },
+    { Icon = "volume_down",     Action = "VolumeDown"     },
+    { Icon = "volume_up",       Action = "VolumeUp"       }
+]

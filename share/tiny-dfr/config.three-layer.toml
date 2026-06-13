@@ -1,0 +1,51 @@
+# Three-layer configuration example for tiny-dfr
+# This demonstrates how to configure the FN key behavior:
+# - Layer 0 (Default): System stats and Hyprland info
+# - Layer 1 (FN pressed): Laptop controls (brightness, audio, media)
+# 
+# To get F-keys, you can use the DoublePressSwitchLayers feature to swap layers.
+# Double-press FN within 200ms to swap the default layer between stats and F-keys.
+#
+# Copy this to /etc/tiny-dfr/config.toml to use it.
+
+# Stats layer is default
+MediaLayerDefault = false
+
+ShowButtonOutlines = true
+EnablePixelShift = false
+FontTemplate = ":bold"
+AdaptiveBrightness = true
+ActiveBrightness = 128
+
+# Double-press FN to swap between stats view and F-key view as default
+DoublePressSwitchLayers = 200
+
+# PRIMARY LAYER: System Stats and Hyprland Info
+PrimaryLayerKeys = [
+    { CpuUsage = true, Action = [], Stretch = 2 },
+    { MemoryUsage = true, Action = [], Stretch = 2 },
+    { ActiveWindow = true, Action = [], Stretch = 4 },
+    { ActiveWorkspace = true, Action = [], Stretch = 1 },
+    { Battery = "both", Action = [], Stretch = 2 },
+    { Time = "24hr", Action = [], Stretch = 2 }
+]
+
+# MEDIA LAYER (accessed via FN key): Laptop controls
+MediaLayerKeys = [
+    { Icon = "brightness_low",  Action = "BrightnessDown" },
+    { Icon = "brightness_high", Action = "BrightnessUp"   },
+    { Icon = "mic_off",         Action = "MicMute"        },
+    { Icon = "search",          Action = "Search"         },
+    { Icon = "backlight_low",   Action = "IllumDown"      },
+    { Icon = "backlight_high",  Action = "IllumUp"        },
+    { Icon = "fast_rewind",     Action = "PreviousSong"   },
+    { Icon = "play_pause",      Action = "PlayPause"      },
+    { Icon = "fast_forward",    Action = "NextSong"       },
+    { Icon = "volume_off",      Action = "Mute"           },
+    { Icon = "volume_down",     Action = "VolumeDown"     },
+    { Icon = "volume_up",       Action = "VolumeUp"       }
+]
+
+# NOTE: To get F-keys on demand:
+# 1. Double-press FN to swap the layers (stats <-> F-keys as default)
+# 2. Or modify this file to use the traditional F-key layout from the default config

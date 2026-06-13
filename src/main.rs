@@ -21,10 +21,7 @@ use libc::{c_char, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY};
 use librsvg_rebind::{prelude::HandleExt, Handle, Rectangle};
 use nix::{
     errno::Errno,
-    sys::{
-        epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags},
-        signal::{SigSet, Signal},
-    },
+    sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags},
 };
 use privdrop::PrivDrop;
 use std::{
@@ -46,12 +43,15 @@ mod config;
 mod display;
 mod fonts;
 mod pixel_shift;
+mod sysinfo_manager;
+mod t2_usb;
 
 use crate::config::ConfigManager;
 use backlight::BacklightManager;
 use config::{ButtonConfig, Config};
 use display::DrmBackend;
 use pixel_shift::{PixelShiftManager, PIXEL_SHIFT_WIDTH_PX};
+use sysinfo_manager::SystemInfoManager;
 
 const BUTTON_SPACING_PX: i32 = 16;
 const BUTTON_COLOR_INACTIVE: f64 = 0.200;
@@ -94,6 +94,12 @@ enum ButtonImage {
     Bitmap(ImageSurface),
     Time(Vec<ChronoItem<'static>>, Locale),
     Battery(String, BatteryIconMode, BatteryImages),
+    LayerToggle(String),
+    LayerToggleIcon(Handle),
+    CpuUsage(Option<Handle>),
+    MemoryUsage(Option<Handle>),
+    ActiveWindow,
+    ActiveWorkspace(Option<Handle>),
     Spacer,
 }
 
@@ -102,6 +108,7 @@ struct Button {
     changed: bool,
     active: bool,
     action: Vec<Key>,
+    command: Option<String>,
     icon_width: f64,
     icon_height: f64,
 }
@@ -251,10 +258,80 @@ fn get_battery_state(battery: &str) -> (u32, BatteryState) {
     (capacity, status)
 }
 
+fn get_power_profile() -> Option<String> {
+    // Try to get current power profile from powerprofilesctl
+    std::process::Command::new("powerprofilesctl")
+        .arg("get")
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                String::from_utf8(output.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| {
+            // Abbreviate profile names
+            match s.trim() {
+                "power-saver" => "SAV".to_string(),
+                "balanced" => "BAL".to_string(),
+                "performance" => "PRF".to_string(),
+                other => other.chars().take(3).collect::<String>().to_uppercase(),
+            }
+        })
+}
+
 impl Button {
     fn with_config(cfg: ButtonConfig) -> Button {
         if let Some(text) = cfg.text {
             Button::new_text(text, cfg.action)
+        } else if let (Some(icon), Some(_)) = (&cfg.icon, &cfg.layer_toggle) {
+            Button::new_layer_toggle_icon(
+                icon,
+                cfg.theme,
+                cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
+                cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
+            )
+        } else if let Some(label) = cfg.layer_toggle {
+            Button::new_layer_toggle(label)
+        } else if let Some(time) = cfg.time {
+            Button::new_time(cfg.action, &time, cfg.locale.as_deref())
+        } else if let Some(battery_mode) = cfg.battery {
+            if let Some(battery) = find_battery_device() {
+                Button::new_battery(cfg.action, cfg.command, battery, battery_mode, cfg.theme)
+            } else {
+                Button::new_text("Battery N/A".to_string(), cfg.action)
+            }
+        } else if cfg.cpu_usage {
+            Button::new_cpu_usage(
+                cfg.action,
+                cfg.command.clone(),
+                cfg.icon.clone(),
+                cfg.theme.clone(),
+                cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
+                cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
+            )
+        } else if cfg.memory_usage {
+            Button::new_memory_usage(
+                cfg.action,
+                cfg.command,
+                cfg.icon,
+                cfg.theme,
+                cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
+                cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
+            )
+        } else if cfg.active_window {
+            Button::new_active_window(cfg.action)
+        } else if cfg.active_workspace {
+            Button::new_active_workspace(
+                cfg.action,
+                cfg.command,
+                cfg.icon,
+                cfg.theme,
+                cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
+                cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
+            )
         } else if let Some(icon) = cfg.icon {
             Button::new_icon(
                 &icon,
@@ -263,14 +340,6 @@ impl Button {
                 cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
                 cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
             )
-        } else if let Some(time) = cfg.time {
-            Button::new_time(cfg.action, &time, cfg.locale.as_deref())
-        } else if let Some(battery_mode) = cfg.battery {
-            if let Some(battery) = find_battery_device() {
-                Button::new_battery(cfg.action, battery, battery_mode, cfg.theme)
-            } else {
-                Button::new_text("Battery N/A".to_string(), cfg.action)
-            }
         } else {
             Button::new_spacer()
         }
@@ -281,6 +350,7 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::Spacer,
+            command: None,
             icon_width: 0.0,
             icon_height: 0.0,
         }
@@ -291,8 +361,44 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::Text(text),
+            command: None,
             icon_width: 0.0,
             icon_height: 0.0,
+        }
+    }
+    fn new_layer_toggle(label: String) -> Button {
+        Button {
+            action: vec![],
+            active: false,
+            changed: false,
+            image: ButtonImage::LayerToggle(label),
+            command: None,
+            icon_width: 0.0,
+            icon_height: 0.0,
+        }
+    }
+    fn new_layer_toggle_icon(
+        path: impl AsRef<str>,
+        theme: Option<impl AsRef<str>>,
+        icon_width: i32,
+        icon_height: i32,
+    ) -> Button {
+        let image =
+            try_load_image(path, theme, icon_width, icon_height).expect("failed to load icon");
+        Button {
+            action: vec![],
+            image: match image {
+                ButtonImage::Svg(handle) => ButtonImage::LayerToggleIcon(handle),
+                ButtonImage::Bitmap(_) => {
+                    panic!("Layer toggle icons must be SVG, not bitmap")
+                }
+                _ => panic!("Unexpected image type for layer toggle icon"),
+            },
+            command: None,
+            icon_width: icon_width as f64,
+            icon_height: icon_height as f64,
+            active: false,
+            changed: false,
         }
     }
     fn new_icon(
@@ -307,6 +413,7 @@ impl Button {
         Button {
             action,
             image,
+            command: None,
             icon_width: icon_width as f64,
             icon_height: icon_height as f64,
             active: false,
@@ -323,6 +430,7 @@ impl Button {
     }
     fn new_battery(
         action: Vec<Key>,
+        command: Option<String>,
         battery: String,
         battery_mode: String,
         theme: Option<impl AsRef<str>>,
@@ -362,6 +470,7 @@ impl Button {
                     charging,
                 },
             ),
+            command,
             icon_width: 0.0,
             icon_height: 0.0,
         }
@@ -389,8 +498,113 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::Time(format_items, locale),
+            command: None,
             icon_width: 0.0,
             icon_height: 0.0,
+        }
+    }
+    fn new_cpu_usage(
+        action: Vec<Key>,
+        command: Option<String>,
+        icon: Option<impl AsRef<str>>,
+        theme: Option<impl AsRef<str>>,
+        icon_width: i32,
+        icon_height: i32,
+    ) -> Button {
+        let icon_handle = icon.and_then(|i| {
+            try_load_image(i, theme, icon_width, icon_height)
+                .ok()
+                .and_then(|img| match img {
+                    ButtonImage::Svg(handle) => Some(handle),
+                    _ => None,
+                })
+        });
+        let (w, h) = if icon_handle.is_some() {
+            (icon_width as f64, icon_height as f64)
+        } else {
+            (0.0, 0.0)
+        };
+        Button {
+            action,
+            active: false,
+            changed: false,
+            image: ButtonImage::CpuUsage(icon_handle),
+            command,
+            icon_width: w,
+            icon_height: h,
+        }
+    }
+    fn new_memory_usage(
+        action: Vec<Key>,
+        command: Option<String>,
+        icon: Option<impl AsRef<str>>,
+        theme: Option<impl AsRef<str>>,
+        icon_width: i32,
+        icon_height: i32,
+    ) -> Button {
+        let icon_handle = icon.and_then(|i| {
+            try_load_image(i, theme, icon_width, icon_height)
+                .ok()
+                .and_then(|img| match img {
+                    ButtonImage::Svg(handle) => Some(handle),
+                    _ => None,
+                })
+        });
+        let (w, h) = if icon_handle.is_some() {
+            (icon_width as f64, icon_height as f64)
+        } else {
+            (0.0, 0.0)
+        };
+        Button {
+            action,
+            active: false,
+            changed: false,
+            image: ButtonImage::MemoryUsage(icon_handle),
+            command,
+            icon_width: w,
+            icon_height: h,
+        }
+    }
+    fn new_active_window(action: Vec<Key>) -> Button {
+        Button {
+            action,
+            active: false,
+            changed: false,
+            image: ButtonImage::ActiveWindow,
+            command: None,
+            icon_width: 0.0,
+            icon_height: 0.0,
+        }
+    }
+    fn new_active_workspace(
+        action: Vec<Key>,
+        command: Option<String>,
+        icon: Option<impl AsRef<str>>,
+        theme: Option<impl AsRef<str>>,
+        icon_width: i32,
+        icon_height: i32,
+    ) -> Button {
+        let icon_handle = icon.and_then(|i| {
+            try_load_image(i, theme, icon_width, icon_height)
+                .ok()
+                .and_then(|img| match img {
+                    ButtonImage::Svg(handle) => Some(handle),
+                    _ => None,
+                })
+        });
+        let (w, h) = if icon_handle.is_some() {
+            (icon_width as f64, icon_height as f64)
+        } else {
+            (0.0, 0.0)
+        };
+        Button {
+            action,
+            active: false,
+            changed: false,
+            image: ButtonImage::ActiveWorkspace(icon_handle),
+            command,
+            icon_width: w,
+            icon_height: h,
         }
     }
     fn needs_faster_refresh(&self) -> bool {
@@ -404,6 +618,10 @@ impl Button {
                     _ => false,
                 }
             }),
+            ButtonImage::CpuUsage(_)
+            | ButtonImage::MemoryUsage(_)
+            | ButtonImage::ActiveWindow
+            | ButtonImage::ActiveWorkspace(_) => true,
             _ => false,
         }
     }
@@ -414,9 +632,10 @@ impl Button {
         button_left_edge: f64,
         button_width: u64,
         y_shift: f64,
+        sysinfo_mgr: Option<&SystemInfoManager>,
     ) {
         match &self.image {
-            ButtonImage::Text(text) => {
+            ButtonImage::Text(text) | ButtonImage::LayerToggle(text) => {
                 let extents = c.text_extents(text).unwrap();
                 c.move_to(
                     button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
@@ -424,7 +643,7 @@ impl Button {
                 );
                 c.show_text(text).unwrap();
             }
-            ButtonImage::Svg(svg) => {
+            ButtonImage::Svg(svg) | ButtonImage::LayerToggleIcon(svg) => {
                 let x =
                     button_left_edge + (button_width as f64 / 2.0 - self.icon_width / 2.0).round();
                 let y = y_shift + ((height as f64 - self.icon_height) / 2.0).round();
@@ -482,17 +701,22 @@ impl Button {
                 } else {
                     None
                 };
-                let percent_str = format!("{:.0}%", capacity);
+                let percent_str = if let Some(profile) = get_power_profile() {
+                    format!("{:.0}% {}", capacity, profile)
+                } else {
+                    format!("{:.0}%", capacity)
+                };
                 let extents = c.text_extents(&percent_str).unwrap();
+                let spacing = 3.0; // Spacing between icon and text
                 let mut width = extents.width();
-                let mut text_offset = 0;
+                let mut text_offset = 0.0;
                 if let Some(svg) = icon {
                     if !battery_mode.should_draw_text() {
                         width = DEFAULT_ICON_SIZE as f64;
                     } else {
-                        width += DEFAULT_ICON_SIZE as f64;
+                        width += DEFAULT_ICON_SIZE as f64 + spacing;
                     }
-                    text_offset = DEFAULT_ICON_SIZE;
+                    text_offset = DEFAULT_ICON_SIZE as f64 + spacing;
                     let x = button_left_edge + (button_width as f64 / 2.0 - width / 2.0).round();
                     let y = y_shift + ((height as f64 - DEFAULT_ICON_SIZE as f64) / 2.0).round();
 
@@ -505,11 +729,134 @@ impl Button {
                 if battery_mode.should_draw_text() {
                     c.move_to(
                         button_left_edge
-                            + (button_width as f64 / 2.0 - width / 2.0 + text_offset as f64)
+                            + (button_width as f64 / 2.0 - width / 2.0 + text_offset)
                                 .round(),
                         y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
                     );
                     c.show_text(&percent_str).unwrap();
+                }
+            }
+            ButtonImage::CpuUsage(icon) => {
+                if let Some(mgr) = sysinfo_mgr {
+                    if let Some(svg) = icon {
+                        // Icon + text layout
+                        let icon_size = self.icon_width.min(self.icon_height);
+                        let cpu_text = format!("{:.0}%", mgr.get_cpu_usage());
+                        let extents = c.text_extents(&cpu_text).unwrap();
+                        let spacing = 4.0;
+                        let total_width = icon_size + spacing + extents.width();
+                        let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+                        
+                        let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+                        svg.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
+                            .unwrap();
+                        
+                        c.move_to(
+                            start_x + icon_size + spacing,
+                            y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                        );
+                        c.show_text(&cpu_text).unwrap();
+                    } else {
+                        // Text only (legacy)
+                        let cpu_text = format!("CPU {:.1}%", mgr.get_cpu_usage());
+                        let extents = c.text_extents(&cpu_text).unwrap();
+                        c.move_to(
+                            button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                            y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                        );
+                        c.show_text(&cpu_text).unwrap();
+                    }
+                }
+            }
+            ButtonImage::MemoryUsage(icon) => {
+                if let Some(mgr) = sysinfo_mgr {
+                    if let Some(svg) = icon {
+                        // Icon + text layout
+                        let icon_size = self.icon_width.min(self.icon_height);
+                        let (used, total) = mgr.get_memory_usage();
+                        let mem_text = format!("{:.1}/{:.1}G", 
+                            used as f64 / 1024.0 / 1024.0 / 1024.0,
+                            total as f64 / 1024.0 / 1024.0 / 1024.0);
+                        let extents = c.text_extents(&mem_text).unwrap();
+                        let spacing = 4.0;
+                        let total_width = icon_size + spacing + extents.width();
+                        let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+                        
+                        let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+                        svg.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
+                            .unwrap();
+                        
+                        c.move_to(
+                            start_x + icon_size + spacing,
+                            y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                        );
+                        c.show_text(&mem_text).unwrap();
+                    } else {
+                        // Text only (legacy)
+                        let (used, total) = mgr.get_memory_usage();
+                        let mem_text = format!("MEM {:.1}G/{:.1}G", used as f64 / 1024.0 / 1024.0 / 1024.0, total as f64 / 1024.0 / 1024.0 / 1024.0);
+                        let extents = c.text_extents(&mem_text).unwrap();
+                        c.move_to(
+                            button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                            y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                        );
+                        c.show_text(&mem_text).unwrap();
+                    }
+                }
+            }
+            ButtonImage::ActiveWindow => {
+                if let Some(mgr) = sysinfo_mgr {
+                    let window = mgr.get_active_window();
+                    let extents = c.text_extents(&window).unwrap();
+                    c.move_to(
+                        button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                        y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                    );
+                    c.show_text(&window).unwrap();
+                }
+            }
+            ButtonImage::ActiveWorkspace(icon) => {
+                if let Some(mgr) = sysinfo_mgr {
+                    let workspace = mgr.get_active_workspace();
+                    
+                    if let Some(svg) = icon {
+                        // Render icon + text layout (similar to battery rendering)
+                        let icon_size = self.icon_width.min(self.icon_height);
+                        let ws_text = if workspace.is_empty() {
+                            "?".to_string()
+                        } else {
+                            workspace.clone()
+                        };
+                        let extents = c.text_extents(&ws_text).unwrap();
+                        
+                        // Calculate total width and spacing
+                        let spacing = 4.0;
+                        let total_width = icon_size + spacing + extents.width();
+                        
+                        // Center the entire (icon + text) block
+                        let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+                        
+                        // Render icon
+                        let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+                        svg.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
+                            .unwrap();
+                        
+                        // Render text (positioned using same method as battery)
+                        c.move_to(
+                            start_x + icon_size + spacing,
+                            y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                        );
+                        c.show_text(&ws_text).unwrap();
+                    } else {
+                        // Text only (legacy behavior)
+                        let ws_text = format!("WS: {}", workspace);
+                        let extents = c.text_extents(&ws_text).unwrap();
+                        c.move_to(
+                            button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                            y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                        );
+                        c.show_text(&ws_text).unwrap();
+                    }
                 }
             }
             ButtonImage::Spacer => (),
@@ -519,11 +866,102 @@ impl Button {
     where
         F: AsRawFd,
     {
+        // Debug: log all set_active calls
+        let button_type = match &self.image {
+            ButtonImage::CpuUsage(_) => "CPU",
+            ButtonImage::MemoryUsage(_) => "Memory",
+            ButtonImage::ActiveWorkspace(_) => "Workspace",
+            ButtonImage::Battery(_, _, _) => "Battery",
+            _ => "Other",
+        };
+        eprintln!("TINY-DFR DEBUG: set_active called: button={}, active={}, has_command={}", 
+            button_type, active, self.command.is_some());
+        
         if self.active != active {
             self.active = active;
             self.changed = true;
 
-            toggle_keys(uinput, &self.action, active as i32);
+            if !matches!(
+                self.image,
+                ButtonImage::LayerToggle(_) | ButtonImage::LayerToggleIcon(_)
+            ) {
+                toggle_keys(uinput, &self.action, active as i32);
+                
+                // Execute command on button press (not release)
+                if active {
+                    if let Some(cmd_str) = &self.command {
+                        eprintln!("TINY-DFR DEBUG: Executing command: {}", cmd_str);
+                        
+                        // Build command with environment variables from current process
+                        // If running as root and we have SUDO_UID, run command as that user
+                        let mut command = if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
+                            if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+                                eprintln!("TINY-DFR DEBUG: Running command as user {} (UID {})", sudo_user, sudo_uid);
+                                let mut cmd = std::process::Command::new("sudo");
+                                cmd.arg("-u").arg(&sudo_user).arg("sh").arg("-c").arg(cmd_str);
+                                cmd
+                            } else {
+                                let mut cmd = std::process::Command::new("sh");
+                                cmd.arg("-c").arg(cmd_str);
+                                cmd
+                            }
+                        } else {
+                            let mut cmd = std::process::Command::new("sh");
+                            cmd.arg("-c").arg(cmd_str);
+                            cmd
+                        };
+                        
+                        // Pass through Wayland/Hyprland environment if available
+                        let mut env_debug = String::new();
+                        if let Ok(val) = std::env::var("WAYLAND_DISPLAY") {
+                            env_debug.push_str(&format!("WAYLAND_DISPLAY={} ", val));
+                            command.env("WAYLAND_DISPLAY", val);
+                        } else {
+                            env_debug.push_str("WAYLAND_DISPLAY=<not set> ");
+                        }
+                        if let Ok(val) = std::env::var("XDG_RUNTIME_DIR") {
+                            env_debug.push_str(&format!("XDG_RUNTIME_DIR={} ", val));
+                            command.env("XDG_RUNTIME_DIR", val);
+                        } else {
+                            env_debug.push_str("XDG_RUNTIME_DIR=<not set> ");
+                        }
+                        if let Ok(val) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE") {
+                            env_debug.push_str(&format!("HYPRLAND_INSTANCE_SIGNATURE={} ", val));
+                            command.env("HYPRLAND_INSTANCE_SIGNATURE", val);
+                        } else {
+                            env_debug.push_str("HYPRLAND_INSTANCE_SIGNATURE=<not set> ");
+                        }
+                        
+                        eprintln!("TINY-DFR DEBUG: Environment: {}", env_debug);
+                        
+                        match command.spawn() {
+                            Ok(child) => {
+                                eprintln!("TINY-DFR DEBUG: Command spawned with PID: {:?}", child.id());
+                            }
+                            Err(e) => {
+                                eprintln!("TINY-DFR DEBUG: Failed to spawn command: {}", e);
+                            }
+                        }
+                    } else {
+                        eprintln!("TINY-DFR DEBUG: Button pressed but no command set");
+                    }
+                }
+            }
+        }
+    }
+    fn is_layer_toggle(&self) -> bool {
+        matches!(
+            self.image,
+            ButtonImage::LayerToggle(_) | ButtonImage::LayerToggleIcon(_)
+        )
+    }
+    fn is_visible(&self, sysinfo_mgr: Option<&SystemInfoManager>) -> bool {
+        match self.image {
+            ButtonImage::ActiveWindow | ButtonImage::ActiveWorkspace(_) => sysinfo_mgr
+                .map(|mgr| mgr.hyprland_available())
+                .unwrap_or(false),
+            ButtonImage::Spacer => false,
+            _ => true,
         }
     }
     fn set_background_color(&self, c: &Context, color: f64) {
@@ -544,6 +982,7 @@ impl Button {
 pub struct FunctionLayer {
     displays_time: bool,
     displays_battery: bool,
+    displays_sysinfo: bool,
     buttons: Vec<(usize, Button)>,
     virtual_button_count: usize,
     faster_refresh: bool,
@@ -558,6 +997,9 @@ impl FunctionLayer {
         let mut virtual_button_count = 0;
         let displays_time = cfg.iter().any(|cfg| cfg.time.is_some());
         let displays_battery = cfg.iter().any(|cfg| cfg.battery.is_some());
+        let displays_sysinfo = cfg.iter().any(|cfg| {
+            cfg.cpu_usage || cfg.memory_usage || cfg.active_window || cfg.active_workspace
+        });
         let buttons = cfg
             .into_iter()
             .scan(&mut virtual_button_count, |state, cfg| {
@@ -575,6 +1017,7 @@ impl FunctionLayer {
         FunctionLayer {
             displays_time,
             displays_battery,
+            displays_sysinfo,
             buttons,
             virtual_button_count,
             faster_refresh,
@@ -588,6 +1031,7 @@ impl FunctionLayer {
         surface: &Surface,
         pixel_shift: (f64, f64),
         complete_redraw: bool,
+        sysinfo_mgr: Option<&SystemInfoManager>,
     ) -> Vec<ClipRect> {
         let c = Context::new(surface).unwrap();
         let mut modified_regions = if complete_redraw {
@@ -647,6 +1091,7 @@ impl FunctionLayer {
             } else {
                 0.0
             };
+            let button_visible = button.is_visible(sysinfo_mgr);
             if !complete_redraw {
                 c.set_source_rgb(0.0, 0.0, 0.0);
                 c.rectangle(
@@ -657,7 +1102,7 @@ impl FunctionLayer {
                 );
                 c.fill().unwrap();
             }
-            if !matches!(button.image, ButtonImage::Spacer) {
+            if button_visible {
                 button.set_background_color(&c, color);
                 // draw box with rounded corners
                 c.new_sub_path();
@@ -694,14 +1139,17 @@ impl FunctionLayer {
                 c.close_path();
                 c.fill().unwrap();
             }
-            c.set_source_rgb(1.0, 1.0, 1.0);
-            button.render(
-                &c,
-                height,
-                left_edge,
-                button_width.ceil() as u64,
-                pixel_shift_y,
-            );
+            if button_visible {
+                c.set_source_rgb(1.0, 1.0, 1.0);
+                button.render(
+                    &c,
+                    height,
+                    left_edge,
+                    button_width.ceil() as u64,
+                    pixel_shift_y,
+                    sysinfo_mgr,
+                );
+            }
 
             button.changed = false;
 
@@ -815,29 +1263,61 @@ where
 }
 
 fn main() {
-    let mut drm = DrmBackend::open_card().unwrap();
-    let (height, width) = drm.mode().size();
-    let _ = panic::catch_unwind(AssertUnwindSafe(|| real_main(&mut drm)));
-    let crash_bitmap = include_bytes!("crash_bitmap.raw");
-    let mut map = drm.map().unwrap();
-    let data = map.as_mut();
-    let mut wptr = 0;
-    for byte in crash_bitmap {
-        for i in 0..8 {
-            let bit = ((byte >> i) & 0x1) == 0;
-            let color = if bit { 0xFF } else { 0x0 };
-            data[wptr] = color;
-            data[wptr + 1] = color;
-            data[wptr + 2] = color;
-            data[wptr + 3] = color;
-            wptr += 4;
+    // Check if we're on a T2 MacBook and initialize if needed
+    // This can be disabled by setting TINY_DFR_SKIP_T2_INIT=1
+    let skip_t2_init = std::env::var("TINY_DFR_SKIP_T2_INIT").unwrap_or_default() == "1";
+    
+    if !skip_t2_init && t2_usb::is_t2_macbook() {
+        println!("Detected T2 MacBook - initializing Touch Bar...");
+        let mut t2 = t2_usb::T2TouchBar::new();
+        match t2.initialize() {
+            Ok(_) => {
+                println!("T2 Touch Bar initialized successfully");
+                // Extra delay to ensure USB subsystem has fully stabilized
+                // This prevents input devices from being grabbed in an inconsistent state
+                println!("Allowing USB subsystem to stabilize...");
+                std::thread::sleep(std::time::Duration::from_secs(3));
+            },
+            Err(e) => {
+                eprintln!("Warning: T2 initialization failed: {}", e);
+                eprintln!("Continuing anyway - the device may already be initialized");
+            }
         }
     }
-    drop(map);
-    drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
-    let mut sigset = SigSet::empty();
-    sigset.add(Signal::SIGTERM);
-    sigset.wait().unwrap();
+
+    let mut drm = DrmBackend::open_card().unwrap();
+    let (height, width) = drm.mode().size();
+    if panic::catch_unwind(AssertUnwindSafe(|| real_main(&mut drm))).is_ok() {
+        return;
+    }
+
+    let crash_bitmap = include_bytes!("crash_bitmap.raw");
+    let drew_crash_bitmap = match drm.map() {
+        Ok(mut map) => {
+            let data = map.as_mut();
+            let mut wptr = 0;
+            for byte in crash_bitmap {
+                for i in 0..8 {
+                    if wptr + 3 >= data.len() {
+                        break;
+                    }
+                    let bit = ((byte >> i) & 0x1) == 0;
+                    let color = if bit { 0xFF } else { 0x0 };
+                    data[wptr] = color;
+                    data[wptr + 1] = color;
+                    data[wptr + 2] = color;
+                    data[wptr + 3] = color;
+                    wptr += 4;
+                }
+            }
+            true
+        }
+        Err(_) => false,
+    };
+    if drew_crash_bitmap {
+        let _ = drm.dirty(&[ClipRect::new(0, 0, height, width)]);
+    }
+    std::process::exit(1);
 }
 
 fn real_main(drm: &mut DrmBackend) {
@@ -848,20 +1328,24 @@ fn real_main(drm: &mut DrmBackend) {
     let mut cfg_mgr = ConfigManager::new();
     let (mut cfg, mut layers) = cfg_mgr.load_config(width);
     let mut pixel_shift = PixelShiftManager::new();
+    let sysinfo_mgr = SystemInfoManager::new();
     let mut last = Instant::now();
 
-    // drop privileges to input and video group
-    let groups = ["input", "video"];
+    if cfg.drop_privileges {
+        // drop privileges to input and video group
+        let groups = ["input", "video"];
 
-    PrivDrop::default()
-        .user("nobody")
-        .group_list(&groups)
-        .apply()
-        .unwrap_or_else(|e| panic!("Failed to drop privileges: {}", e));
+        PrivDrop::default()
+            .user("nobody")
+            .group_list(&groups)
+            .apply()
+            .unwrap_or_else(|e| panic!("Failed to drop privileges: {}", e));
+    }
 
     let mut surface =
         ImageSurface::create(Format::ARgb32, db_width as i32, db_height as i32).unwrap();
     let mut active_layer = 0;
+    let mut normal_layer = 0;
     let mut needs_complete_redraw = true;
 
     let mut input_tb = Libinput::new_with_udev(Interface);
@@ -920,6 +1404,7 @@ fn real_main(drm: &mut DrmBackend) {
     loop {
         if cfg_mgr.update_config(&mut cfg, &mut layers, width) {
             active_layer = 0;
+            normal_layer = 0;
             needs_complete_redraw = true;
         }
 
@@ -951,12 +1436,31 @@ fn real_main(drm: &mut DrmBackend) {
                 }
             }
         }
+        
+        if layers[active_layer].displays_sysinfo {
+            for button in &mut layers[active_layer].buttons {
+                match button.1.image {
+                    ButtonImage::CpuUsage(_)
+                    | ButtonImage::MemoryUsage(_)
+                    | ButtonImage::ActiveWindow
+                    | ButtonImage::ActiveWorkspace(_) => {
+                        button.1.changed = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
 
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
             let shift = if cfg.enable_pixel_shift {
                 pixel_shift.get()
             } else {
                 (0.0, 0.0)
+            };
+            let sysinfo_mgr_ref = if layers[active_layer].displays_sysinfo {
+                Some(&sysinfo_mgr)
+            } else {
+                None
             };
             let clips = layers[active_layer].draw(
                 &cfg,
@@ -965,6 +1469,7 @@ fn real_main(drm: &mut DrmBackend) {
                 &surface,
                 shift,
                 needs_complete_redraw,
+                sysinfo_mgr_ref,
             );
             let data = surface.data().unwrap();
             drm.map().unwrap().as_mut()[..data.len()].copy_from_slice(&data);
@@ -995,7 +1500,7 @@ fn real_main(drm: &mut DrmBackend) {
                 }
                 Event::Keyboard(KeyboardEvent::Key(key)) => {
                     if key.key() == Key::Fn as u32 {
-                        if cfg.double_press_switch_layers > 0 && key.key_state() == KeyState::Pressed {
+                        if cfg.double_press_switch_layers > 0 && layers.len() == 2 && key.key_state() == KeyState::Pressed {
                             if last.elapsed() < Duration::from_millis(cfg.double_press_switch_layers.into()) {
                                 layers.swap(0, 1);
                             }
@@ -1003,7 +1508,7 @@ fn real_main(drm: &mut DrmBackend) {
                         }
                         let new_layer = match key.key_state() {
                             KeyState::Pressed => 1,
-                            KeyState::Released => 0,
+                            KeyState::Released => normal_layer,
                         };
                         if active_layer != new_layer {
                             active_layer = new_layer;
@@ -1027,12 +1532,12 @@ fn real_main(drm: &mut DrmBackend) {
                             }
                         }
                         TouchEvent::Motion(mtn) => {
+                            let x = mtn.x_transformed(width as u32);
+                            let y = mtn.y_transformed(height as u32);
                             if !touches.contains_key(&mtn.seat_slot()) {
                                 continue;
                             }
 
-                            let x = mtn.x_transformed(width as u32);
-                            let y = mtn.y_transformed(height as u32);
                             let (layer, btn) = *touches.get(&mtn.seat_slot()).unwrap();
                             let hit = layers[active_layer]
                                 .hit(width, height, x, y, Some(btn))
@@ -1044,7 +1549,14 @@ fn real_main(drm: &mut DrmBackend) {
                                 continue;
                             }
                             let (layer, btn) = *touches.get(&up.seat_slot()).unwrap();
+                            let is_layer_toggle = layers[layer].buttons[btn].1.is_layer_toggle();
                             layers[layer].buttons[btn].1.set_active(&mut uinput, false);
+                            touches.remove(&up.seat_slot());
+                            if is_layer_toggle && layers.len() > 2 {
+                                normal_layer = if normal_layer == 2 { 0 } else { 2 };
+                                active_layer = normal_layer;
+                                needs_complete_redraw = true;
+                            }
                         }
                         _ => {}
                     }

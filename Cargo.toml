@@ -9,6 +9,8 @@ repository = "https://github.com/AsahiLinux/tiny-dfr.git"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+
+
 [dependencies]
 cairo-rs = { version = "0.22", default-features = false, features = ["freetype", "png"] }
 librsvg-rebind = "0.3"
@@ -27,6 +29,9 @@ freetype-rs = "0.38"
 freedesktop-icons = "0.4.0"
 chrono = { version = "0.4", features = ["unstable-locales"] }
 udev = "0.9"
+sysinfo = "0.33"
+hyprland = { version = "0.4.0-beta.3" }
+serde_json = "1"
 
 [build-dependencies]
 pkg-config = "0.3"
