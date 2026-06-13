@@ -69,6 +69,27 @@ fn setup_hyprland_env() -> Option<String> {
 fn set_hyprland_env(runtime_dir: &str, signature: &str) {
     env::set_var("XDG_RUNTIME_DIR", runtime_dir);
     env::set_var("HYPRLAND_INSTANCE_SIGNATURE", signature);
+    
+    // Also try to detect and set WAYLAND_DISPLAY
+    if let Some(display) = detect_wayland_display(runtime_dir) {
+        env::set_var("WAYLAND_DISPLAY", display);
+    }
+}
+
+fn detect_wayland_display(runtime_dir: &str) -> Option<String> {
+    // Look for wayland-* socket files
+    let runtime_path = Path::new(runtime_dir);
+    if let Ok(entries) = fs::read_dir(runtime_path) {
+        for entry in entries.flatten() {
+            let filename = entry.file_name();
+            let name = filename.to_string_lossy();
+            if name.starts_with("wayland-") && !name.ends_with(".lock") {
+                // Found a wayland socket, return it
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn hyprland_socket_from_env() -> Option<String> {
@@ -117,16 +138,23 @@ fn find_hyprland_env_in_proc() -> Option<(String, String)> {
         let environ = fs::read(proc_entry.path().join("environ")).ok()?;
         let mut runtime_dir = None;
         let mut signature = None;
+        let mut wayland_display = None;
 
         for entry in environ.split(|b| *b == 0) {
             if let Some(value) = entry.strip_prefix(b"XDG_RUNTIME_DIR=") {
                 runtime_dir = String::from_utf8(value.to_vec()).ok();
             } else if let Some(value) = entry.strip_prefix(b"HYPRLAND_INSTANCE_SIGNATURE=") {
                 signature = String::from_utf8(value.to_vec()).ok();
+            } else if let Some(value) = entry.strip_prefix(b"WAYLAND_DISPLAY=") {
+                wayland_display = String::from_utf8(value.to_vec()).ok();
             }
         }
 
         if let (Some(runtime_dir), Some(signature)) = (runtime_dir, signature) {
+            // Also set WAYLAND_DISPLAY if found
+            if let Some(display) = wayland_display {
+                env::set_var("WAYLAND_DISPLAY", display);
+            }
             return Some((runtime_dir, signature));
         }
     }
