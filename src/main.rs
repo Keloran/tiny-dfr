@@ -46,12 +46,15 @@ mod config;
 mod display;
 mod fonts;
 mod pixel_shift;
+mod sysinfo_manager;
+mod t2_usb;
 
 use crate::config::ConfigManager;
 use backlight::BacklightManager;
 use config::{ButtonConfig, Config};
 use display::DrmBackend;
 use pixel_shift::{PixelShiftManager, PIXEL_SHIFT_WIDTH_PX};
+use sysinfo_manager::SystemInfoManager;
 
 const BUTTON_SPACING_PX: i32 = 16;
 const BUTTON_COLOR_INACTIVE: f64 = 0.200;
@@ -94,6 +97,11 @@ enum ButtonImage {
     Bitmap(ImageSurface),
     Time(Vec<ChronoItem<'static>>, Locale),
     Battery(String, BatteryIconMode, BatteryImages),
+    LayerToggle(String),
+    CpuUsage,
+    MemoryUsage,
+    ActiveWindow,
+    ActiveWorkspace,
     Spacer,
 }
 
@@ -263,6 +271,8 @@ impl Button {
                 cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
                 cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
             )
+        } else if let Some(label) = cfg.layer_toggle {
+            Button::new_layer_toggle(label)
         } else if let Some(time) = cfg.time {
             Button::new_time(cfg.action, &time, cfg.locale.as_deref())
         } else if let Some(battery_mode) = cfg.battery {
@@ -271,6 +281,14 @@ impl Button {
             } else {
                 Button::new_text("Battery N/A".to_string(), cfg.action)
             }
+        } else if cfg.cpu_usage {
+            Button::new_cpu_usage(cfg.action)
+        } else if cfg.memory_usage {
+            Button::new_memory_usage(cfg.action)
+        } else if cfg.active_window {
+            Button::new_active_window(cfg.action)
+        } else if cfg.active_workspace {
+            Button::new_active_workspace(cfg.action)
         } else {
             Button::new_spacer()
         }
@@ -291,6 +309,16 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::Text(text),
+            icon_width: 0.0,
+            icon_height: 0.0,
+        }
+    }
+    fn new_layer_toggle(label: String) -> Button {
+        Button {
+            action: vec![],
+            active: false,
+            changed: false,
+            image: ButtonImage::LayerToggle(label),
             icon_width: 0.0,
             icon_height: 0.0,
         }
@@ -393,6 +421,46 @@ impl Button {
             icon_height: 0.0,
         }
     }
+    fn new_cpu_usage(action: Vec<Key>) -> Button {
+        Button {
+            action,
+            active: false,
+            changed: false,
+            image: ButtonImage::CpuUsage,
+            icon_width: 0.0,
+            icon_height: 0.0,
+        }
+    }
+    fn new_memory_usage(action: Vec<Key>) -> Button {
+        Button {
+            action,
+            active: false,
+            changed: false,
+            image: ButtonImage::MemoryUsage,
+            icon_width: 0.0,
+            icon_height: 0.0,
+        }
+    }
+    fn new_active_window(action: Vec<Key>) -> Button {
+        Button {
+            action,
+            active: false,
+            changed: false,
+            image: ButtonImage::ActiveWindow,
+            icon_width: 0.0,
+            icon_height: 0.0,
+        }
+    }
+    fn new_active_workspace(action: Vec<Key>) -> Button {
+        Button {
+            action,
+            active: false,
+            changed: false,
+            image: ButtonImage::ActiveWorkspace,
+            icon_width: 0.0,
+            icon_height: 0.0,
+        }
+    }
     fn needs_faster_refresh(&self) -> bool {
         match &self.image {
             ButtonImage::Time(items, _) => items.iter().any(|item| {
@@ -404,6 +472,10 @@ impl Button {
                     _ => false,
                 }
             }),
+            ButtonImage::CpuUsage
+            | ButtonImage::MemoryUsage
+            | ButtonImage::ActiveWindow
+            | ButtonImage::ActiveWorkspace => true,
             _ => false,
         }
     }
@@ -414,9 +486,10 @@ impl Button {
         button_left_edge: f64,
         button_width: u64,
         y_shift: f64,
+        sysinfo_mgr: Option<&SystemInfoManager>,
     ) {
         match &self.image {
-            ButtonImage::Text(text) => {
+            ButtonImage::Text(text) | ButtonImage::LayerToggle(text) => {
                 let extents = c.text_extents(text).unwrap();
                 c.move_to(
                     button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
@@ -512,6 +585,52 @@ impl Button {
                     c.show_text(&percent_str).unwrap();
                 }
             }
+            ButtonImage::CpuUsage => {
+                if let Some(mgr) = sysinfo_mgr {
+                    let cpu_text = format!("CPU {:.1}%", mgr.get_cpu_usage());
+                    let extents = c.text_extents(&cpu_text).unwrap();
+                    c.move_to(
+                        button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                        y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                    );
+                    c.show_text(&cpu_text).unwrap();
+                }
+            }
+            ButtonImage::MemoryUsage => {
+                if let Some(mgr) = sysinfo_mgr {
+                    let (used, total) = mgr.get_memory_usage();
+                    let mem_text = format!("MEM {:.1}G/{:.1}G", used as f64 / 1024.0 / 1024.0 / 1024.0, total as f64 / 1024.0 / 1024.0 / 1024.0);
+                    let extents = c.text_extents(&mem_text).unwrap();
+                    c.move_to(
+                        button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                        y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                    );
+                    c.show_text(&mem_text).unwrap();
+                }
+            }
+            ButtonImage::ActiveWindow => {
+                if let Some(mgr) = sysinfo_mgr {
+                    let window = mgr.get_active_window();
+                    let extents = c.text_extents(&window).unwrap();
+                    c.move_to(
+                        button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                        y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                    );
+                    c.show_text(&window).unwrap();
+                }
+            }
+            ButtonImage::ActiveWorkspace => {
+                if let Some(mgr) = sysinfo_mgr {
+                    let workspace = mgr.get_active_workspace();
+                    let ws_text = format!("WS: {}", workspace);
+                    let extents = c.text_extents(&ws_text).unwrap();
+                    c.move_to(
+                        button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                        y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                    );
+                    c.show_text(&ws_text).unwrap();
+                }
+            }
             ButtonImage::Spacer => (),
         }
     }
@@ -523,7 +642,21 @@ impl Button {
             self.active = active;
             self.changed = true;
 
-            toggle_keys(uinput, &self.action, active as i32);
+            if !matches!(self.image, ButtonImage::LayerToggle(_)) {
+                toggle_keys(uinput, &self.action, active as i32);
+            }
+        }
+    }
+    fn is_layer_toggle(&self) -> bool {
+        matches!(self.image, ButtonImage::LayerToggle(_))
+    }
+    fn is_visible(&self, sysinfo_mgr: Option<&SystemInfoManager>) -> bool {
+        match self.image {
+            ButtonImage::ActiveWindow | ButtonImage::ActiveWorkspace => sysinfo_mgr
+                .map(|mgr| mgr.hyprland_available())
+                .unwrap_or(false),
+            ButtonImage::Spacer => false,
+            _ => true,
         }
     }
     fn set_background_color(&self, c: &Context, color: f64) {
@@ -544,6 +677,7 @@ impl Button {
 pub struct FunctionLayer {
     displays_time: bool,
     displays_battery: bool,
+    displays_sysinfo: bool,
     buttons: Vec<(usize, Button)>,
     virtual_button_count: usize,
     faster_refresh: bool,
@@ -558,6 +692,9 @@ impl FunctionLayer {
         let mut virtual_button_count = 0;
         let displays_time = cfg.iter().any(|cfg| cfg.time.is_some());
         let displays_battery = cfg.iter().any(|cfg| cfg.battery.is_some());
+        let displays_sysinfo = cfg.iter().any(|cfg| {
+            cfg.cpu_usage || cfg.memory_usage || cfg.active_window || cfg.active_workspace
+        });
         let buttons = cfg
             .into_iter()
             .scan(&mut virtual_button_count, |state, cfg| {
@@ -575,6 +712,7 @@ impl FunctionLayer {
         FunctionLayer {
             displays_time,
             displays_battery,
+            displays_sysinfo,
             buttons,
             virtual_button_count,
             faster_refresh,
@@ -588,6 +726,7 @@ impl FunctionLayer {
         surface: &Surface,
         pixel_shift: (f64, f64),
         complete_redraw: bool,
+        sysinfo_mgr: Option<&SystemInfoManager>,
     ) -> Vec<ClipRect> {
         let c = Context::new(surface).unwrap();
         let mut modified_regions = if complete_redraw {
@@ -647,6 +786,7 @@ impl FunctionLayer {
             } else {
                 0.0
             };
+            let button_visible = button.is_visible(sysinfo_mgr);
             if !complete_redraw {
                 c.set_source_rgb(0.0, 0.0, 0.0);
                 c.rectangle(
@@ -657,7 +797,7 @@ impl FunctionLayer {
                 );
                 c.fill().unwrap();
             }
-            if !matches!(button.image, ButtonImage::Spacer) {
+            if button_visible {
                 button.set_background_color(&c, color);
                 // draw box with rounded corners
                 c.new_sub_path();
@@ -694,14 +834,17 @@ impl FunctionLayer {
                 c.close_path();
                 c.fill().unwrap();
             }
-            c.set_source_rgb(1.0, 1.0, 1.0);
-            button.render(
-                &c,
-                height,
-                left_edge,
-                button_width.ceil() as u64,
-                pixel_shift_y,
-            );
+            if button_visible {
+                c.set_source_rgb(1.0, 1.0, 1.0);
+                button.render(
+                    &c,
+                    height,
+                    left_edge,
+                    button_width.ceil() as u64,
+                    pixel_shift_y,
+                    sysinfo_mgr,
+                );
+            }
 
             button.changed = false;
 
@@ -815,6 +958,22 @@ where
 }
 
 fn main() {
+    // Check if we're on a T2 MacBook and initialize if needed
+    // This can be disabled by setting TINY_DFR_SKIP_T2_INIT=1
+    let skip_t2_init = std::env::var("TINY_DFR_SKIP_T2_INIT").unwrap_or_default() == "1";
+    
+    if !skip_t2_init && t2_usb::is_t2_macbook() {
+        println!("Detected T2 MacBook - initializing Touch Bar...");
+        let mut t2 = t2_usb::T2TouchBar::new();
+        match t2.initialize() {
+            Ok(_) => println!("T2 Touch Bar initialized successfully"),
+            Err(e) => {
+                eprintln!("Warning: T2 initialization failed: {}", e);
+                eprintln!("Continuing anyway - the device may already be initialized");
+            }
+        }
+    }
+
     let mut drm = DrmBackend::open_card().unwrap();
     let (height, width) = drm.mode().size();
     let _ = panic::catch_unwind(AssertUnwindSafe(|| real_main(&mut drm)));
@@ -848,20 +1007,24 @@ fn real_main(drm: &mut DrmBackend) {
     let mut cfg_mgr = ConfigManager::new();
     let (mut cfg, mut layers) = cfg_mgr.load_config(width);
     let mut pixel_shift = PixelShiftManager::new();
+    let sysinfo_mgr = SystemInfoManager::new();
     let mut last = Instant::now();
 
-    // drop privileges to input and video group
-    let groups = ["input", "video"];
+    if cfg.drop_privileges {
+        // drop privileges to input and video group
+        let groups = ["input", "video"];
 
-    PrivDrop::default()
-        .user("nobody")
-        .group_list(&groups)
-        .apply()
-        .unwrap_or_else(|e| panic!("Failed to drop privileges: {}", e));
+        PrivDrop::default()
+            .user("nobody")
+            .group_list(&groups)
+            .apply()
+            .unwrap_or_else(|e| panic!("Failed to drop privileges: {}", e));
+    }
 
     let mut surface =
         ImageSurface::create(Format::ARgb32, db_width as i32, db_height as i32).unwrap();
     let mut active_layer = 0;
+    let mut normal_layer = 0;
     let mut needs_complete_redraw = true;
 
     let mut input_tb = Libinput::new_with_udev(Interface);
@@ -920,6 +1083,7 @@ fn real_main(drm: &mut DrmBackend) {
     loop {
         if cfg_mgr.update_config(&mut cfg, &mut layers, width) {
             active_layer = 0;
+            normal_layer = 0;
             needs_complete_redraw = true;
         }
 
@@ -951,12 +1115,31 @@ fn real_main(drm: &mut DrmBackend) {
                 }
             }
         }
+        
+        if layers[active_layer].displays_sysinfo {
+            for button in &mut layers[active_layer].buttons {
+                match button.1.image {
+                    ButtonImage::CpuUsage
+                    | ButtonImage::MemoryUsage
+                    | ButtonImage::ActiveWindow
+                    | ButtonImage::ActiveWorkspace => {
+                        button.1.changed = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
 
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
             let shift = if cfg.enable_pixel_shift {
                 pixel_shift.get()
             } else {
                 (0.0, 0.0)
+            };
+            let sysinfo_mgr_ref = if layers[active_layer].displays_sysinfo {
+                Some(&sysinfo_mgr)
+            } else {
+                None
             };
             let clips = layers[active_layer].draw(
                 &cfg,
@@ -965,6 +1148,7 @@ fn real_main(drm: &mut DrmBackend) {
                 &surface,
                 shift,
                 needs_complete_redraw,
+                sysinfo_mgr_ref,
             );
             let data = surface.data().unwrap();
             drm.map().unwrap().as_mut()[..data.len()].copy_from_slice(&data);
@@ -995,7 +1179,7 @@ fn real_main(drm: &mut DrmBackend) {
                 }
                 Event::Keyboard(KeyboardEvent::Key(key)) => {
                     if key.key() == Key::Fn as u32 {
-                        if cfg.double_press_switch_layers > 0 && key.key_state() == KeyState::Pressed {
+                        if cfg.double_press_switch_layers > 0 && layers.len() == 2 && key.key_state() == KeyState::Pressed {
                             if last.elapsed() < Duration::from_millis(cfg.double_press_switch_layers.into()) {
                                 layers.swap(0, 1);
                             }
@@ -1003,7 +1187,7 @@ fn real_main(drm: &mut DrmBackend) {
                         }
                         let new_layer = match key.key_state() {
                             KeyState::Pressed => 1,
-                            KeyState::Released => 0,
+                            KeyState::Released => normal_layer,
                         };
                         if active_layer != new_layer {
                             active_layer = new_layer;
@@ -1027,12 +1211,12 @@ fn real_main(drm: &mut DrmBackend) {
                             }
                         }
                         TouchEvent::Motion(mtn) => {
+                            let x = mtn.x_transformed(width as u32);
+                            let y = mtn.y_transformed(height as u32);
                             if !touches.contains_key(&mtn.seat_slot()) {
                                 continue;
                             }
 
-                            let x = mtn.x_transformed(width as u32);
-                            let y = mtn.y_transformed(height as u32);
                             let (layer, btn) = *touches.get(&mtn.seat_slot()).unwrap();
                             let hit = layers[active_layer]
                                 .hit(width, height, x, y, Some(btn))
@@ -1044,7 +1228,14 @@ fn real_main(drm: &mut DrmBackend) {
                                 continue;
                             }
                             let (layer, btn) = *touches.get(&up.seat_slot()).unwrap();
+                            let is_layer_toggle = layers[layer].buttons[btn].1.is_layer_toggle();
                             layers[layer].buttons[btn].1.set_active(&mut uinput, false);
+                            touches.remove(&up.seat_slot());
+                            if is_layer_toggle && layers.len() > 2 {
+                                normal_layer = if normal_layer == 2 { 0 } else { 2 };
+                                active_layer = normal_layer;
+                                needs_complete_redraw = true;
+                            }
                         }
                         _ => {}
                     }

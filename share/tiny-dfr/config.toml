@@ -40,6 +40,16 @@ ActiveBrightness = 128
 # A sensible value to try is around 200.
 DoublePressSwitchLayers = 0
 
+# Auto-add ESC key on wider MacBooks (width >= 2170px)
+# The ESC key is automatically added to both layers on models without a physical ESC key
+# Set to false to disable this and have more space for custom buttons
+AutoAddEscKey = true
+
+# Drop privileges to nobody after opening input/video devices.
+# Set to false if you need root-only access during runtime, such as reading a
+# user's Hyprland IPC socket from /run/user/<uid> when tiny-dfr is started with sudo.
+DropPrivileges = true
+
 # This key defines the contents of the primary layer
 # (the one with F{number} keys)
 # You can change the individual buttons, add, or remove them

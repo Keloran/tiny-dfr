@@ -23,6 +23,7 @@ pub struct Config {
     pub adaptive_brightness: bool,
     pub active_brightness: u32,
     pub double_press_switch_layers: u32,
+    pub drop_privileges: bool,
 }
 
 #[derive(Deserialize)]
@@ -35,8 +36,11 @@ struct ConfigProxy {
     adaptive_brightness: Option<bool>,
     active_brightness: Option<u32>,
     double_press_switch_layers: Option<u32>,
+    auto_add_esc_key: Option<bool>,
+    drop_privileges: Option<bool>,
     primary_layer_keys: Option<Vec<ButtonConfig>>,
     media_layer_keys: Option<Vec<ButtonConfig>>,
+    controls_layer_keys: Option<Vec<ButtonConfig>>,
 }
 
 fn array_or_single<'de, D>(deserializer: D) -> Result<Vec<Key>, D::Error>
@@ -66,7 +70,7 @@ where
     deserializer.deserialize_any(ArrayOrSingle)
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ButtonConfig {
     #[serde(alias = "Svg")]
@@ -76,6 +80,15 @@ pub struct ButtonConfig {
     pub time: Option<String>,
     pub battery: Option<String>,
     pub locale: Option<String>,
+    pub layer_toggle: Option<String>,
+    #[serde(default)]
+    pub cpu_usage: bool,
+    #[serde(default)]
+    pub memory_usage: bool,
+    #[serde(default)]
+    pub active_window: bool,
+    #[serde(default)]
+    pub active_workspace: bool,
     #[serde(deserialize_with = "array_or_single", default)]
     pub action: Vec<Key>,
     pub stretch: Option<usize>,
@@ -98,7 +111,7 @@ fn load_font(name: &str) -> FontFace {
     FontFace::create_from_ft(&face).unwrap()
 }
 
-fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
+fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
     let mut base =
         toml::from_str::<ConfigProxy>(&read_to_string("/usr/share/tiny-dfr/config.toml").unwrap())
             .unwrap();
@@ -113,13 +126,20 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
         base.adaptive_brightness = user.adaptive_brightness.or(base.adaptive_brightness);
         base.media_layer_keys = user.media_layer_keys.or(base.media_layer_keys);
         base.primary_layer_keys = user.primary_layer_keys.or(base.primary_layer_keys);
+        base.controls_layer_keys = user.controls_layer_keys.or(base.controls_layer_keys);
         base.active_brightness = user.active_brightness.or(base.active_brightness);
         base.double_press_switch_layers = user.double_press_switch_layers.or(base.double_press_switch_layers);
+        base.auto_add_esc_key = user.auto_add_esc_key.or(base.auto_add_esc_key);
+        base.drop_privileges = user.drop_privileges.or(base.drop_privileges);
     };
     let mut media_layer_keys = base.media_layer_keys.unwrap();
     let mut primary_layer_keys = base.primary_layer_keys.unwrap();
-    if width >= 2170 {
-        for layer in [&mut media_layer_keys, &mut primary_layer_keys] {
+    let mut controls_layer_keys = base
+        .controls_layer_keys
+        .unwrap_or_else(|| media_layer_keys.clone());
+    let auto_add_esc = base.auto_add_esc_key.unwrap_or(true);
+    if width >= 2170 && auto_add_esc {
+        for layer in [&mut media_layer_keys, &mut primary_layer_keys, &mut controls_layer_keys] {
             layer.insert(
                 0,
                 ButtonConfig {
@@ -131,6 +151,11 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
                     time: None,
                     locale: None,
                     battery: None,
+                    layer_toggle: None,
+                    cpu_usage: false,
+                    memory_usage: false,
+                    active_window: false,
+                    active_workspace: false,
                     icon_width: None,
                     icon_height: None,
                 },
@@ -139,10 +164,11 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
     }
     let media_layer = FunctionLayer::with_config(media_layer_keys);
     let fkey_layer = FunctionLayer::with_config(primary_layer_keys);
+    let controls_layer = FunctionLayer::with_config(controls_layer_keys);
     let layers = if base.media_layer_default.unwrap() {
-        [media_layer, fkey_layer]
+        vec![media_layer, fkey_layer, controls_layer]
     } else {
-        [fkey_layer, media_layer]
+        vec![fkey_layer, media_layer, controls_layer]
     };
     let cfg = Config {
         show_button_outlines: base.show_button_outlines.unwrap(),
@@ -151,6 +177,7 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
         font_face: load_font(&base.font_template.unwrap()),
         active_brightness: base.active_brightness.unwrap(),
         double_press_switch_layers: base.double_press_switch_layers.unwrap(),
+        drop_privileges: base.drop_privileges.unwrap_or(true),
     };
     (cfg, layers)
 }
@@ -178,13 +205,13 @@ impl ConfigManager {
             watch_desc,
         }
     }
-    pub fn load_config(&self, width: u16) -> (Config, [FunctionLayer; 2]) {
+    pub fn load_config(&self, width: u16) -> (Config, Vec<FunctionLayer>) {
         load_config(width)
     }
     pub fn update_config(
         &mut self,
         cfg: &mut Config,
-        layers: &mut [FunctionLayer; 2],
+        layers: &mut Vec<FunctionLayer>,
         width: u16,
     ) -> bool {
         if self.watch_desc.is_none() {
@@ -197,7 +224,7 @@ impl ConfigManager {
         }
     }
     #[cold]
-    fn handle_events(&mut self, cfg: &mut Config, layers: &mut [FunctionLayer; 2], width: u16, evts: Result<Vec<InotifyEvent>, Errno>) -> bool {
+    fn handle_events(&mut self, cfg: &mut Config, layers: &mut Vec<FunctionLayer>, width: u16, evts: Result<Vec<InotifyEvent>, Errno>) -> bool {
         let mut ret = false;
         for evt in evts.unwrap() {
             if Some(evt.wd) != self.watch_desc {
