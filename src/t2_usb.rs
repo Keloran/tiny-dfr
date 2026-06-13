@@ -138,21 +138,33 @@ impl T2TouchBar {
         self.wait_for_enumeration(30)?;
 
         println!("Performing USB reset...");
-        self.reset()?;
+        // Store the original path before reset
+        let original_path = self.usb_device_path.clone();
+        
+        if let Err(e) = self.reset() {
+            eprintln!("Warning: USB reset failed: {}", e);
+            eprintln!("Device may already be initialized, continuing anyway...");
+        } else {
+            println!("USB reset successful");
+        }
 
-        // Give the kernel time to re-enumerate and bind the driver
+        // Give the kernel extra time to re-enumerate and bind the driver
+        // This is critical - the USB subsystem needs time to stabilize
         println!("Waiting for driver binding...");
-        thread::sleep(Duration::from_secs(2));
+        thread::sleep(Duration::from_secs(5));
 
         // Wait for DRM device to appear
         let start = std::time::Instant::now();
-        while start.elapsed().as_secs() < 10 {
+        while start.elapsed().as_secs() < 15 {
             if Path::new("/dev/dri").exists() {
                 // Check if any DRM card exists
                 if let Ok(entries) = fs::read_dir("/dev/dri") {
                     for entry in entries.flatten() {
                         if entry.file_name().to_string_lossy().starts_with("card") {
                             println!("DRM device found: {}", entry.path().display());
+                            // Give USB subsystem additional time to stabilize
+                            // This prevents input devices from being in a stuck state
+                            thread::sleep(Duration::from_secs(2));
                             return Ok(());
                         }
                     }
@@ -161,7 +173,9 @@ impl T2TouchBar {
             thread::sleep(Duration::from_millis(500));
         }
 
-        Err(anyhow!("DRM device did not appear after USB reset"))
+        eprintln!("Warning: DRM device did not appear after USB reset");
+        eprintln!("Continuing anyway - you may need to manually restart tiny-dfr");
+        Ok(()) // Don't fail - let the main loop try to continue
     }
 }
 

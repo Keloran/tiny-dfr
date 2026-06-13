@@ -1,22 +1,46 @@
 [Unit]
 Description=Tiny Apple T2 and Silicon Macs Touch Bar daemon
-After=systemd-user-sessions.service getty@tty1.service plymouth-quit.service systemd-logind.service dev-tiny_dfr_display.device dev-tiny_dfr_backlight.device dev-tiny_dfr_display_backlight.device
-BindsTo=dev-tiny_dfr_display.device dev-tiny_dfr_backlight.device
-Wants=dev-tiny_dfr_display_backlight.device
+After=systemd-user-sessions.service getty@tty1.service plymouth-quit.service systemd-logind.service
+# Don't use BindsTo - it causes service to stop during USB reset
+# After=dev-tiny_dfr_display.device dev-tiny_dfr_backlight.device dev-tiny_dfr_display_backlight.device
+Wants=dev-tiny_dfr_display.device dev-tiny_dfr_backlight.device dev-tiny_dfr_display_backlight.device
+StartLimitIntervalSec=5min
+StartLimitBurst=3
 
 [Service]
 ExecStart=/usr/bin/tiny-dfr
-Restart=always
+Restart=on-failure
+RestartSec=5s
+# Give the service time to initialize before systemd considers it started
+# This prevents systemd from killing it during USB reset
+TimeoutStartSec=60s
 
+# Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-PrivateIPC=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=strict
-RestrictAddressFamilies=AF_UNIX AF_NETLINK
 RestrictNamespaces=true
 RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+
+# Allow access to Hyprland socket in /run/user
+# ProtectHome doesn't actually block /run/user (it's not considered "home")
+# But we still use read-only to allow potential home directory config access
+ProtectHome=read-only
+
+# Allow reading /proc to detect Hyprland process environment
+ProtectProc=default
+
+# Explicitly allow access to /run for Hyprland socket detection
+ReadWritePaths=/run
+
+# Note: PrivateIPC and PrivateTmp are disabled to allow Hyprland communication
+# PrivateIPC=true would create an isolated IPC namespace
+# PrivateTmp=true would create an isolated /tmp
+# These can be re-enabled if Hyprland features are not needed
+
+[Install]
+WantedBy=multi-user.target

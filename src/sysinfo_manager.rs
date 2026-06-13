@@ -13,12 +13,16 @@ const HYPRLAND_REFRESH: Duration = Duration::from_millis(250);
 
 /// Configure the Hyprland IPC environment when tiny-dfr is started through sudo.
 fn setup_hyprland_env() -> Option<String> {
+    // Try environment variables first
     if env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok() && env::var("XDG_RUNTIME_DIR").is_ok() {
+        println!("Hyprland: Using existing environment variables");
         return hyprland_socket_from_env();
     }
 
+    // Try SUDO_UID
     if let Ok(sudo_uid) = env::var("SUDO_UID") {
         let runtime_dir = format!("/run/user/{sudo_uid}");
+        println!("Hyprland: Checking SUDO_UID runtime dir: {runtime_dir}");
         if let Some(signature) = find_hyprland_signature_in_runtime(&runtime_dir) {
             set_hyprland_env(&runtime_dir, &signature);
             println!("Hyprland detected via SUDO_UID runtime dir: {runtime_dir}");
@@ -26,12 +30,16 @@ fn setup_hyprland_env() -> Option<String> {
         }
     }
 
+    // Try scanning /proc for Hyprland process
+    println!("Hyprland: Scanning /proc for Hyprland process...");
     if let Some((runtime_dir, signature)) = find_hyprland_env_in_proc() {
         set_hyprland_env(&runtime_dir, &signature);
         println!("Hyprland detected via process environment: {runtime_dir}");
         return hyprland_socket_from_env();
     }
 
+    // Try all runtime directories
+    println!("Hyprland: Scanning /run/user directories...");
     if let Ok(runtime_users) = fs::read_dir("/run/user") {
         for runtime_user in runtime_users.flatten() {
             let runtime_dir = runtime_user.path();
@@ -41,15 +49,20 @@ fn setup_hyprland_env() -> Option<String> {
                 return hyprland_socket_from_env();
             }
         }
+    } else {
+        println!("Hyprland: Failed to read /run/user directory");
     }
 
+    // Try XDG_RUNTIME_DIR as last resort
     if let Ok(xdg_runtime) = env::var("XDG_RUNTIME_DIR") {
+        println!("Hyprland: Checking XDG_RUNTIME_DIR: {xdg_runtime}");
         if let Some(signature) = find_hyprland_signature_in_runtime(&xdg_runtime) {
             set_hyprland_env(&xdg_runtime, &signature);
             return hyprland_socket_from_env();
         }
     }
 
+    println!("Hyprland: Not detected - Hyprland features will be unavailable");
     None
 }
 

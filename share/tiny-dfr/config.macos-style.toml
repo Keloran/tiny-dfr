@@ -23,9 +23,11 @@ ActiveBrightness = 128
 # FN has a fixed meaning in this config: show F-keys while held.
 DoublePressSwitchLayers = 0
 
-# Disable auto-adding ESC key on wider displays
-# Set to false to remove ESC button and get more space
-AutoAddEscKey = false
+# ESC is configurable. If enabled, the info layout is:
+#   esc, >, cpu, mem, title, workspace, battery, clock
+# If disabled, the info layout is:
+#   >, cpu, mem, title, workspace, battery, clock
+ShowEscKey = false
 
 # Keep root privileges so Hyprland IPC remains accessible when tiny-dfr is
 # launched with sudo while Hyprland runs as your user.
@@ -43,10 +45,12 @@ MediaLayerKeys = [
     # Memory usage display
     { MemoryUsage = true, Action = [], Stretch = 2 },
     
-    # Active window title from Hyprland
-    { ActiveWindow = true, Action = [], Stretch = 4 },
+    # Active window title from Hyprland.
+    # Increase this Stretch and/or reduce ActiveWorkspace Stretch for a wider title box.
+    { ActiveWindow = true, Action = [], Stretch = 5 },
     
-    # Current workspace/desktop from Hyprland
+    # Current workspace/desktop from Hyprland.
+    # Increase this if you use long workspace names; keep it low for a wider title box.
     { ActiveWorkspace = true, Action = [], Stretch = 1 },
     
     # Battery status
