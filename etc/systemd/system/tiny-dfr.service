@@ -26,16 +26,15 @@ RestrictNamespaces=true
 RestrictSUIDSGID=true
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
 
-# Allow access to Hyprland socket in /run/user
-# ProtectHome doesn't actually block /run/user (it's not considered "home")
-# But we still use read-only to allow potential home directory config access
-ProtectHome=read-only
+# Allow access to Hyprland socket in /run/user and launching apps
+# Use tmpfs to allow /run/user access while still protecting actual home directories
+ProtectHome=tmpfs
 
 # Allow reading /proc to detect Hyprland process environment
 ProtectProc=default
 
-# Explicitly allow access to /run for Hyprland socket detection
-ReadWritePaths=/run
+# Explicitly allow access to /run for Hyprland socket detection and app launching
+ReadWritePaths=/run /run/user
 
 # Note: PrivateIPC and PrivateTmp are disabled to allow Hyprland communication
 # PrivateIPC=true would create an isolated IPC namespace

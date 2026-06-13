@@ -866,6 +866,17 @@ impl Button {
     where
         F: AsRawFd,
     {
+        // Debug: log all set_active calls
+        let button_type = match &self.image {
+            ButtonImage::CpuUsage(_) => "CPU",
+            ButtonImage::MemoryUsage(_) => "Memory",
+            ButtonImage::ActiveWorkspace(_) => "Workspace",
+            ButtonImage::Battery(_, _, _) => "Battery",
+            _ => "Other",
+        };
+        eprintln!("TINY-DFR DEBUG: set_active called: button={}, active={}, has_command={}", 
+            button_type, active, self.command.is_some());
+        
         if self.active != active {
             self.active = active;
             self.changed = true;
@@ -878,14 +889,61 @@ impl Button {
                 
                 // Execute command on button press (not release)
                 if active {
-                    if let Some(cmd) = &self.command {
-                        // Debug: log command execution
-                        let _ = std::fs::write("/tmp/tiny-dfr-debug.log", 
-                            format!("Executing command: {}\n", cmd));
-                        let _ = std::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(cmd)
-                            .spawn();
+                    if let Some(cmd_str) = &self.command {
+                        eprintln!("TINY-DFR DEBUG: Executing command: {}", cmd_str);
+                        
+                        // Build command with environment variables from current process
+                        // If running as root and we have SUDO_UID, run command as that user
+                        let mut command = if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
+                            if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+                                eprintln!("TINY-DFR DEBUG: Running command as user {} (UID {})", sudo_user, sudo_uid);
+                                let mut cmd = std::process::Command::new("sudo");
+                                cmd.arg("-u").arg(&sudo_user).arg("sh").arg("-c").arg(cmd_str);
+                                cmd
+                            } else {
+                                let mut cmd = std::process::Command::new("sh");
+                                cmd.arg("-c").arg(cmd_str);
+                                cmd
+                            }
+                        } else {
+                            let mut cmd = std::process::Command::new("sh");
+                            cmd.arg("-c").arg(cmd_str);
+                            cmd
+                        };
+                        
+                        // Pass through Wayland/Hyprland environment if available
+                        let mut env_debug = String::new();
+                        if let Ok(val) = std::env::var("WAYLAND_DISPLAY") {
+                            env_debug.push_str(&format!("WAYLAND_DISPLAY={} ", val));
+                            command.env("WAYLAND_DISPLAY", val);
+                        } else {
+                            env_debug.push_str("WAYLAND_DISPLAY=<not set> ");
+                        }
+                        if let Ok(val) = std::env::var("XDG_RUNTIME_DIR") {
+                            env_debug.push_str(&format!("XDG_RUNTIME_DIR={} ", val));
+                            command.env("XDG_RUNTIME_DIR", val);
+                        } else {
+                            env_debug.push_str("XDG_RUNTIME_DIR=<not set> ");
+                        }
+                        if let Ok(val) = std::env::var("HYPRLAND_INSTANCE_SIGNATURE") {
+                            env_debug.push_str(&format!("HYPRLAND_INSTANCE_SIGNATURE={} ", val));
+                            command.env("HYPRLAND_INSTANCE_SIGNATURE", val);
+                        } else {
+                            env_debug.push_str("HYPRLAND_INSTANCE_SIGNATURE=<not set> ");
+                        }
+                        
+                        eprintln!("TINY-DFR DEBUG: Environment: {}", env_debug);
+                        
+                        match command.spawn() {
+                            Ok(child) => {
+                                eprintln!("TINY-DFR DEBUG: Command spawned with PID: {:?}", child.id());
+                            }
+                            Err(e) => {
+                                eprintln!("TINY-DFR DEBUG: Failed to spawn command: {}", e);
+                            }
+                        }
+                    } else {
+                        eprintln!("TINY-DFR DEBUG: Button pressed but no command set");
                     }
                 }
             }
