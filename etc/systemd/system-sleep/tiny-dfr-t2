@@ -1,0 +1,15 @@
+#!/bin/sh
+
+# T2 Touch Bar displays often need a USB reset after resume. tiny-dfr performs
+# that reset during startup, so restart the daemon around system sleep.
+
+case "$1" in
+    pre)
+        systemctl stop tiny-dfr.service
+        ;;
+    post)
+        # Give apple-bce/appletbdrm a moment to re-enumerate after resume.
+        sleep 2
+        systemctl restart tiny-dfr.service
+        ;;
+esac
