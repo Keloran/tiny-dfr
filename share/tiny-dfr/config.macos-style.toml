@@ -1,6 +1,6 @@
 # macOS-style configuration for tiny-dfr
 # This provides a macOS-like dashboard by default with system stats
-# Press FN to access F-keys. Press > to access laptop controls.
+# Press FN to access F-keys. Press the settings icon to access laptop controls.
 # Copy this to /etc/tiny-dfr/config.toml to use it.
 
 # Show system stats by default (not media controls)
@@ -37,13 +37,13 @@ DropPrivileges = false
 # This shows system information like macOS Touch Bar
 MediaLayerKeys = [
     # Switch to laptop controls
-    { LayerToggle = ">", Action = [], Stretch = 1 },
+    { Icon = "settings", LayerToggle = "settings", Action = [], Stretch = 1 },
 
     # CPU usage display
-    { CpuUsage = true, Action = [], Stretch = 2 },
+    { Icon = "cpu", CpuUsage = true, Action = [], Stretch = 2 },
     
     # Memory usage display
-    { MemoryUsage = true, Action = [], Stretch = 2 },
+    { Icon = "memory", MemoryUsage = true, Action = [], Stretch = 2 },
     
     # Active window title from Hyprland.
     # Increase this Stretch and/or reduce ActiveWorkspace Stretch for a wider title box.
@@ -51,7 +51,7 @@ MediaLayerKeys = [
     
     # Current workspace/desktop from Hyprland.
     # Increase this if you use long workspace names; keep it low for a wider title box.
-    { ActiveWorkspace = true, Action = [], Stretch = 1 },
+    { Icon = "window", ActiveWorkspace = true, Action = [], Stretch = 1 },
     
     # Battery status
     { Battery = "both", Action = [], Stretch = 2 },
