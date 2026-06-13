@@ -877,8 +877,11 @@ impl Button {
                 toggle_keys(uinput, &self.action, active as i32);
                 
                 // Execute command on button press (not release)
-                if active && self.command.is_some() {
+                if active {
                     if let Some(cmd) = &self.command {
+                        // Debug: log command execution
+                        let _ = std::fs::write("/tmp/tiny-dfr-debug.log", 
+                            format!("Executing command: {}\n", cmd));
                         let _ = std::process::Command::new("sh")
                             .arg("-c")
                             .arg(cmd)

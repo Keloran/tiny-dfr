@@ -2,9 +2,10 @@
 # copy it to /etc/tiny-dfr/config.toml and edit that copy.
 # The daemon will merge those two files, giving preference to the one in /etc
 
-# F{number} keys are shown when Fn is not pressed by default.
-# Set this to true if you want the media keys to be shown without Fn pressed
-MediaLayerDefault = false
+# Default layer to show on startup
+# Options: "SystemInfo", "FKeys", "Media"
+# "FKeys" shows F1-F12 by default (traditional behavior)
+DefaultLayer = "FKeys"
 
 # Set this to false if you want to hide the button outline,
 # leaving only the text/logo
