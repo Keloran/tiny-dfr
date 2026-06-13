@@ -108,6 +108,7 @@ struct Button {
     changed: bool,
     active: bool,
     action: Vec<Key>,
+    command: Option<String>,
     icon_width: f64,
     icon_height: f64,
 }
@@ -257,6 +258,30 @@ fn get_battery_state(battery: &str) -> (u32, BatteryState) {
     (capacity, status)
 }
 
+fn get_power_profile() -> Option<String> {
+    // Try to get current power profile from powerprofilesctl
+    std::process::Command::new("powerprofilesctl")
+        .arg("get")
+        .output()
+        .ok()
+        .and_then(|output| {
+            if output.status.success() {
+                String::from_utf8(output.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .map(|s| {
+            // Abbreviate profile names
+            match s.trim() {
+                "power-saver" => "SAV".to_string(),
+                "balanced" => "BAL".to_string(),
+                "performance" => "PRF".to_string(),
+                other => other.chars().take(3).collect::<String>().to_uppercase(),
+            }
+        })
+}
+
 impl Button {
     fn with_config(cfg: ButtonConfig) -> Button {
         if let Some(text) = cfg.text {
@@ -274,13 +299,14 @@ impl Button {
             Button::new_time(cfg.action, &time, cfg.locale.as_deref())
         } else if let Some(battery_mode) = cfg.battery {
             if let Some(battery) = find_battery_device() {
-                Button::new_battery(cfg.action, battery, battery_mode, cfg.theme)
+                Button::new_battery(cfg.action, cfg.command, battery, battery_mode, cfg.theme)
             } else {
                 Button::new_text("Battery N/A".to_string(), cfg.action)
             }
         } else if cfg.cpu_usage {
             Button::new_cpu_usage(
                 cfg.action,
+                cfg.command.clone(),
                 cfg.icon.clone(),
                 cfg.theme.clone(),
                 cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
@@ -289,6 +315,7 @@ impl Button {
         } else if cfg.memory_usage {
             Button::new_memory_usage(
                 cfg.action,
+                cfg.command,
                 cfg.icon,
                 cfg.theme,
                 cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
@@ -299,6 +326,7 @@ impl Button {
         } else if cfg.active_workspace {
             Button::new_active_workspace(
                 cfg.action,
+                cfg.command,
                 cfg.icon,
                 cfg.theme,
                 cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
@@ -322,6 +350,7 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::Spacer,
+            command: None,
             icon_width: 0.0,
             icon_height: 0.0,
         }
@@ -332,6 +361,7 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::Text(text),
+            command: None,
             icon_width: 0.0,
             icon_height: 0.0,
         }
@@ -342,6 +372,7 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::LayerToggle(label),
+            command: None,
             icon_width: 0.0,
             icon_height: 0.0,
         }
@@ -363,6 +394,7 @@ impl Button {
                 }
                 _ => panic!("Unexpected image type for layer toggle icon"),
             },
+            command: None,
             icon_width: icon_width as f64,
             icon_height: icon_height as f64,
             active: false,
@@ -381,6 +413,7 @@ impl Button {
         Button {
             action,
             image,
+            command: None,
             icon_width: icon_width as f64,
             icon_height: icon_height as f64,
             active: false,
@@ -397,6 +430,7 @@ impl Button {
     }
     fn new_battery(
         action: Vec<Key>,
+        command: Option<String>,
         battery: String,
         battery_mode: String,
         theme: Option<impl AsRef<str>>,
@@ -436,6 +470,7 @@ impl Button {
                     charging,
                 },
             ),
+            command,
             icon_width: 0.0,
             icon_height: 0.0,
         }
@@ -463,12 +498,14 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::Time(format_items, locale),
+            command: None,
             icon_width: 0.0,
             icon_height: 0.0,
         }
     }
     fn new_cpu_usage(
         action: Vec<Key>,
+        command: Option<String>,
         icon: Option<impl AsRef<str>>,
         theme: Option<impl AsRef<str>>,
         icon_width: i32,
@@ -492,12 +529,14 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::CpuUsage(icon_handle),
+            command,
             icon_width: w,
             icon_height: h,
         }
     }
     fn new_memory_usage(
         action: Vec<Key>,
+        command: Option<String>,
         icon: Option<impl AsRef<str>>,
         theme: Option<impl AsRef<str>>,
         icon_width: i32,
@@ -521,6 +560,7 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::MemoryUsage(icon_handle),
+            command,
             icon_width: w,
             icon_height: h,
         }
@@ -531,12 +571,14 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::ActiveWindow,
+            command: None,
             icon_width: 0.0,
             icon_height: 0.0,
         }
     }
     fn new_active_workspace(
         action: Vec<Key>,
+        command: Option<String>,
         icon: Option<impl AsRef<str>>,
         theme: Option<impl AsRef<str>>,
         icon_width: i32,
@@ -560,6 +602,7 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::ActiveWorkspace(icon_handle),
+            command,
             icon_width: w,
             icon_height: h,
         }
@@ -658,17 +701,22 @@ impl Button {
                 } else {
                     None
                 };
-                let percent_str = format!("{:.0}%", capacity);
+                let percent_str = if let Some(profile) = get_power_profile() {
+                    format!("{:.0}% {}", capacity, profile)
+                } else {
+                    format!("{:.0}%", capacity)
+                };
                 let extents = c.text_extents(&percent_str).unwrap();
+                let spacing = 3.0; // Spacing between icon and text
                 let mut width = extents.width();
-                let mut text_offset = 0;
+                let mut text_offset = 0.0;
                 if let Some(svg) = icon {
                     if !battery_mode.should_draw_text() {
                         width = DEFAULT_ICON_SIZE as f64;
                     } else {
-                        width += DEFAULT_ICON_SIZE as f64;
+                        width += DEFAULT_ICON_SIZE as f64 + spacing;
                     }
-                    text_offset = DEFAULT_ICON_SIZE;
+                    text_offset = DEFAULT_ICON_SIZE as f64 + spacing;
                     let x = button_left_edge + (button_width as f64 / 2.0 - width / 2.0).round();
                     let y = y_shift + ((height as f64 - DEFAULT_ICON_SIZE as f64) / 2.0).round();
 
@@ -681,7 +729,7 @@ impl Button {
                 if battery_mode.should_draw_text() {
                     c.move_to(
                         button_left_edge
-                            + (button_width as f64 / 2.0 - width / 2.0 + text_offset as f64)
+                            + (button_width as f64 / 2.0 - width / 2.0 + text_offset)
                                 .round(),
                         y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
                     );
@@ -827,6 +875,16 @@ impl Button {
                 ButtonImage::LayerToggle(_) | ButtonImage::LayerToggleIcon(_)
             ) {
                 toggle_keys(uinput, &self.action, active as i32);
+                
+                // Execute command on button press (not release)
+                if active && self.command.is_some() {
+                    if let Some(cmd) = &self.command {
+                        let _ = std::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(cmd)
+                            .spawn();
+                    }
+                }
             }
         }
     }

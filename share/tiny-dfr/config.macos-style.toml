@@ -2,6 +2,10 @@
 # This provides a macOS-like dashboard by default with system stats
 # Press FN to access F-keys. Press the settings icon to access laptop controls.
 # Copy this to /etc/tiny-dfr/config.toml to use it.
+#
+# Button Commands:
+# Buttons can execute shell commands when pressed by adding: Command = "your-command"
+# Example: { Icon = "window", ActiveWorkspace = true, Command = "hyprctl dispatch workspace 1" }
 
 # Show system stats by default (not media controls)
 # NOTE: The naming is confusing - MediaLayerDefault=true means show MediaLayerKeys by default
@@ -40,9 +44,14 @@ MediaLayerKeys = [
     { Icon = "settings", LayerToggle = "settings", Action = [], Stretch = 1 },
 
     # CPU usage display
+    # Optional: Add Command to execute when pressed. Examples:
+    #   Command = "kitty htop"                                  # Open htop in kitty terminal
+    #   Command = "alacritty -e htop"                           # Open htop in alacritty
     { Icon = "cpu", CpuUsage = true, Action = [], Stretch = 2 },
     
     # Memory usage display
+    # Optional: Add Command to execute when pressed. Examples:
+    #   Command = "kitty htop"                                  # Open htop in kitty terminal
     { Icon = "memory", MemoryUsage = true, Action = [], Stretch = 2 },
     
     # Active window title from Hyprland.
@@ -51,9 +60,20 @@ MediaLayerKeys = [
     
     # Current workspace/desktop from Hyprland.
     # Increase this if you use long workspace names; keep it low for a wider title box.
+    # Optional: Add Command to execute when pressed. Examples:
+    #   Command = "hyprctl dispatch hymission:toggle"           # Toggle hymission mission control
+    #   Command = "hyprctl dispatch overview:toggle"            # Toggle overview plugin
+    #   Command = "hyprctl dispatch workspace 1"                # Switch to workspace 1
+    #   Command = "rofi -show window"                           # Show rofi window switcher
     { Icon = "window", ActiveWorkspace = true, Action = [], Stretch = 1 },
     
     # Battery status
+    # Optional: Add Command to execute when pressed. Examples:
+    #   Command = "/usr/share/tiny-dfr/cycle-power-profile.sh" # Cycle: power-saver -> balanced -> performance
+    #   Command = "powerprofilesctl set power-saver"            # Set power saver mode
+    #   Command = "powerprofilesctl set balanced"               # Set balanced mode
+    #   Command = "powerprofilesctl set performance"            # Set performance mode
+    #   Command = "gnome-control-center power"                  # Open power settings
     { Battery = "both", Action = [], Stretch = 2 },
     
     # Current time

@@ -92,6 +92,7 @@ pub struct ButtonConfig {
     pub active_workspace: bool,
     #[serde(deserialize_with = "array_or_single", default)]
     pub action: Vec<Key>,
+    pub command: Option<String>,
     pub stretch: Option<usize>,
     pub icon_width: Option<i32>,
     pub icon_height: Option<i32>,
@@ -151,6 +152,7 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
                     text: Some("esc".into()),
                     theme: None,
                     action: vec![Key::Esc],
+                    command: None,
                     stretch: None,
                     time: None,
                     locale: None,
