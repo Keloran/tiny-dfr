@@ -37,6 +37,7 @@ struct ConfigProxy {
     active_brightness: Option<u32>,
     double_press_switch_layers: Option<u32>,
     auto_add_esc_key: Option<bool>,
+    show_esc_key: Option<bool>,
     drop_privileges: Option<bool>,
     primary_layer_keys: Option<Vec<ButtonConfig>>,
     media_layer_keys: Option<Vec<ButtonConfig>>,
@@ -130,6 +131,7 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
         base.active_brightness = user.active_brightness.or(base.active_brightness);
         base.double_press_switch_layers = user.double_press_switch_layers.or(base.double_press_switch_layers);
         base.auto_add_esc_key = user.auto_add_esc_key.or(base.auto_add_esc_key);
+        base.show_esc_key = user.show_esc_key.or(base.show_esc_key);
         base.drop_privileges = user.drop_privileges.or(base.drop_privileges);
     };
     let mut media_layer_keys = base.media_layer_keys.unwrap();
@@ -137,8 +139,10 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
     let mut controls_layer_keys = base
         .controls_layer_keys
         .unwrap_or_else(|| media_layer_keys.clone());
-    let auto_add_esc = base.auto_add_esc_key.unwrap_or(true);
-    if width >= 2170 && auto_add_esc {
+    let show_esc = base
+        .show_esc_key
+        .unwrap_or_else(|| width >= 2170 && base.auto_add_esc_key.unwrap_or(true));
+    if show_esc {
         for layer in [&mut media_layer_keys, &mut primary_layer_keys, &mut controls_layer_keys] {
             layer.insert(
                 0,

@@ -45,6 +45,10 @@ DoublePressSwitchLayers = 0
 # Set to false to disable this and have more space for custom buttons
 AutoAddEscKey = true
 
+# Override the ESC key heuristic.
+# Uncomment and set explicitly if you always/never want ESC regardless of model.
+# ShowEscKey = true
+
 # Drop privileges to nobody after opening input/video devices.
 # Set to false if you need root-only access during runtime, such as reading a
 # user's Hyprland IPC socket from /run/user/<uid> when tiny-dfr is started with sudo.

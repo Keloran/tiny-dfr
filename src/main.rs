@@ -21,10 +21,7 @@ use libc::{c_char, O_ACCMODE, O_RDONLY, O_RDWR, O_WRONLY};
 use librsvg_rebind::{prelude::HandleExt, Handle, Rectangle};
 use nix::{
     errno::Errno,
-    sys::{
-        epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags},
-        signal::{SigSet, Signal},
-    },
+    sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags},
 };
 use privdrop::PrivDrop;
 use std::{
@@ -966,7 +963,13 @@ fn main() {
         println!("Detected T2 MacBook - initializing Touch Bar...");
         let mut t2 = t2_usb::T2TouchBar::new();
         match t2.initialize() {
-            Ok(_) => println!("T2 Touch Bar initialized successfully"),
+            Ok(_) => {
+                println!("T2 Touch Bar initialized successfully");
+                // Extra delay to ensure USB subsystem has fully stabilized
+                // This prevents input devices from being grabbed in an inconsistent state
+                println!("Allowing USB subsystem to stabilize...");
+                std::thread::sleep(std::time::Duration::from_secs(3));
+            },
             Err(e) => {
                 eprintln!("Warning: T2 initialization failed: {}", e);
                 eprintln!("Continuing anyway - the device may already be initialized");
@@ -976,27 +979,37 @@ fn main() {
 
     let mut drm = DrmBackend::open_card().unwrap();
     let (height, width) = drm.mode().size();
-    let _ = panic::catch_unwind(AssertUnwindSafe(|| real_main(&mut drm)));
-    let crash_bitmap = include_bytes!("crash_bitmap.raw");
-    let mut map = drm.map().unwrap();
-    let data = map.as_mut();
-    let mut wptr = 0;
-    for byte in crash_bitmap {
-        for i in 0..8 {
-            let bit = ((byte >> i) & 0x1) == 0;
-            let color = if bit { 0xFF } else { 0x0 };
-            data[wptr] = color;
-            data[wptr + 1] = color;
-            data[wptr + 2] = color;
-            data[wptr + 3] = color;
-            wptr += 4;
-        }
+    if panic::catch_unwind(AssertUnwindSafe(|| real_main(&mut drm))).is_ok() {
+        return;
     }
-    drop(map);
-    drm.dirty(&[ClipRect::new(0, 0, height, width)]).unwrap();
-    let mut sigset = SigSet::empty();
-    sigset.add(Signal::SIGTERM);
-    sigset.wait().unwrap();
+
+    let crash_bitmap = include_bytes!("crash_bitmap.raw");
+    let drew_crash_bitmap = match drm.map() {
+        Ok(mut map) => {
+            let data = map.as_mut();
+            let mut wptr = 0;
+            for byte in crash_bitmap {
+                for i in 0..8 {
+                    if wptr + 3 >= data.len() {
+                        break;
+                    }
+                    let bit = ((byte >> i) & 0x1) == 0;
+                    let color = if bit { 0xFF } else { 0x0 };
+                    data[wptr] = color;
+                    data[wptr + 1] = color;
+                    data[wptr + 2] = color;
+                    data[wptr + 3] = color;
+                    wptr += 4;
+                }
+            }
+            true
+        }
+        Err(_) => false,
+    };
+    if drew_crash_bitmap {
+        let _ = drm.dirty(&[ClipRect::new(0, 0, height, width)]);
+    }
+    std::process::exit(1);
 }
 
 fn real_main(drm: &mut DrmBackend) {
