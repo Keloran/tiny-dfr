@@ -1,15 +1,15 @@
 # macOS-style configuration for tiny-dfr
 # This provides a macOS-like dashboard by default with system stats
-# Press FN to access F-keys. Press the settings icon to access laptop controls.
+# Press FN to access F-keys. Press the settings icon to access media controls.
 # Copy this to /etc/tiny-dfr/config.toml to use it.
 #
 # Button Commands:
 # Buttons can execute shell commands when pressed by adding: Command = "your-command"
 # Example: { Icon = "window", ActiveWorkspace = true, Command = "hyprctl dispatch workspace 1" }
 
-# Show system stats by default (not media controls)
-# NOTE: The naming is confusing - MediaLayerDefault=true means show MediaLayerKeys by default
-MediaLayerDefault = true
+# Default layer to show on startup
+# Options: "SystemInfo", "FKeys", "Media"
+DefaultLayer = "SystemInfo"
 
 # Show button outlines for clarity
 ShowButtonOutlines = true
@@ -27,20 +27,20 @@ ActiveBrightness = 128
 # FN has a fixed meaning in this config: show F-keys while held.
 DoublePressSwitchLayers = 0
 
-# ESC is configurable. If enabled, the info layout is:
-#   esc, >, cpu, mem, title, workspace, battery, clock
-# If disabled, the info layout is:
-#   >, cpu, mem, title, workspace, battery, clock
+# ESC is configurable. If enabled, the system info layout is:
+#   esc, settings, cpu, mem, title, workspace, battery, clock
+# If disabled, the system info layout is:
+#   settings, cpu, mem, title, workspace, battery, clock
 ShowEscKey = false
 
 # Keep root privileges so Hyprland IPC remains accessible when tiny-dfr is
 # launched with sudo while Hyprland runs as your user.
 DropPrivileges = false
 
-# MediaLayerKeys = Default view (shown without FN pressed)
+# SystemInfoLayerKeys = Default dashboard view (shown without FN pressed)
 # This shows system information like macOS Touch Bar
-MediaLayerKeys = [
-    # Switch to laptop controls
+SystemInfoLayerKeys = [
+    # Switch to media controls
     { Icon = "settings", LayerToggle = "settings", Action = [], Stretch = 1 },
 
     # CPU usage display
@@ -97,9 +97,9 @@ PrimaryLayerKeys = [
     { Text = "F12", Action = "F12" }
 ]
 
-# ControlsLayerKeys = shown after pressing < on the default layer
-# Press < to return to the information screen
-ControlsLayerKeys = [
+# MediaLayerKeys = Media controls layer (shown after pressing settings icon)
+# Press < to return to the system info screen
+MediaLayerKeys = [
     { LayerToggle = "<", Action = [], Stretch = 1 },
 
     # Brightness controls
