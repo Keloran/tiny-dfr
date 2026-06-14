@@ -111,6 +111,8 @@ struct Button {
     command: Option<String>,
     icon_width: f64,
     icon_height: f64,
+    vertical_layout: bool,
+    font_size: Option<f64>,
 }
 
 fn try_load_svg(path: &str) -> Result<ButtonImage> {
@@ -284,7 +286,10 @@ fn get_power_profile() -> Option<String> {
 
 impl Button {
     fn with_config(cfg: ButtonConfig) -> Button {
-        if let Some(text) = cfg.text {
+        let vertical_layout = cfg.vertical_layout;
+        let font_size = cfg.font_size;
+        
+        let mut button = if let Some(text) = cfg.text {
             Button::new_text(text, cfg.action)
         } else if let (Some(icon), Some(_)) = (&cfg.icon, &cfg.layer_toggle) {
             Button::new_layer_toggle_icon(
@@ -342,7 +347,11 @@ impl Button {
             )
         } else {
             Button::new_spacer()
-        }
+        };
+        
+        button.vertical_layout = vertical_layout;
+        button.font_size = font_size;
+        button
     }
     fn new_spacer() -> Button {
         Button {
@@ -353,6 +362,8 @@ impl Button {
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
+            vertical_layout: false,
+            font_size: None,
         }
     }
     fn new_text(text: String, action: Vec<Key>) -> Button {
@@ -364,6 +375,8 @@ impl Button {
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
+            vertical_layout: false,
+            font_size: None,
         }
     }
     fn new_layer_toggle(label: String) -> Button {
@@ -375,6 +388,8 @@ impl Button {
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
+            vertical_layout: false,
+            font_size: None,
         }
     }
     fn new_layer_toggle_icon(
@@ -399,6 +414,8 @@ impl Button {
             icon_height: icon_height as f64,
             active: false,
             changed: false,
+            vertical_layout: false,
+            font_size: None,
         }
     }
     fn new_icon(
@@ -418,6 +435,8 @@ impl Button {
             icon_height: icon_height as f64,
             active: false,
             changed: false,
+            vertical_layout: false,
+            font_size: None,
         }
     }
     fn load_battery_image(icon: &str, theme: Option<impl AsRef<str>>) -> Handle {
@@ -473,6 +492,8 @@ impl Button {
             command,
             icon_width: 0.0,
             icon_height: 0.0,
+            vertical_layout: false,
+            font_size: None,
         }
     }
 
@@ -501,6 +522,8 @@ impl Button {
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
+            vertical_layout: false,
+            font_size: None,
         }
     }
     fn new_cpu_usage(
@@ -532,6 +555,8 @@ impl Button {
             command,
             icon_width: w,
             icon_height: h,
+            vertical_layout: false,
+            font_size: None,
         }
     }
     fn new_memory_usage(
@@ -563,6 +588,8 @@ impl Button {
             command,
             icon_width: w,
             icon_height: h,
+            vertical_layout: false,
+            font_size: None,
         }
     }
     fn new_active_window(action: Vec<Key>) -> Button {
@@ -574,6 +601,8 @@ impl Button {
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
+            vertical_layout: false,
+            font_size: None,
         }
     }
     fn new_active_workspace(
@@ -605,6 +634,8 @@ impl Button {
             command,
             icon_width: w,
             icon_height: h,
+            vertical_layout: false,
+            font_size: None,
         }
     }
     fn needs_faster_refresh(&self) -> bool {
@@ -707,55 +738,110 @@ impl Button {
                     format!("{:.0}%", capacity)
                 };
                 let extents = c.text_extents(&percent_str).unwrap();
-                let spacing = 3.0; // Spacing between icon and text
-                let mut width = extents.width();
-                let mut text_offset = 0.0;
-                if let Some(svg) = icon {
-                    if !battery_mode.should_draw_text() {
-                        width = DEFAULT_ICON_SIZE as f64;
+                let spacing = 3.0;
+                
+                if self.vertical_layout {
+                    // Vertical layout: icon on top, text below
+                    let icon_size = DEFAULT_ICON_SIZE as f64;
+                    let total_height = if icon.is_some() && battery_mode.should_draw_text() {
+                        icon_size + spacing + extents.height()
+                    } else if icon.is_some() {
+                        icon_size
                     } else {
-                        width += DEFAULT_ICON_SIZE as f64 + spacing;
+                        extents.height()
+                    };
+                    
+                    let start_y = y_shift + (height as f64 / 2.0 - total_height / 2.0).round();
+                    
+                    if let Some(svg) = icon {
+                        let icon_x = button_left_edge + (button_width as f64 / 2.0 - icon_size / 2.0).round();
+                        svg.render_document(
+                            c,
+                            &Rectangle::new(icon_x, start_y, icon_size, icon_size),
+                        )
+                        .unwrap();
                     }
-                    text_offset = DEFAULT_ICON_SIZE as f64 + spacing;
-                    let x = button_left_edge + (button_width as f64 / 2.0 - width / 2.0).round();
-                    let y = y_shift + ((height as f64 - DEFAULT_ICON_SIZE as f64) / 2.0).round();
+                    
+                    if battery_mode.should_draw_text() {
+                        let text_y = if icon.is_some() {
+                            start_y + icon_size + spacing + extents.height()
+                        } else {
+                            start_y + extents.height()
+                        };
+                        c.move_to(
+                            button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                            text_y,
+                        );
+                        c.show_text(&percent_str).unwrap();
+                    }
+                } else {
+                    // Horizontal layout (original)
+                    let mut width = extents.width();
+                    let mut text_offset = 0.0;
+                    if let Some(svg) = icon {
+                        if !battery_mode.should_draw_text() {
+                            width = DEFAULT_ICON_SIZE as f64;
+                        } else {
+                            width += DEFAULT_ICON_SIZE as f64 + spacing;
+                        }
+                        text_offset = DEFAULT_ICON_SIZE as f64 + spacing;
+                        let x = button_left_edge + (button_width as f64 / 2.0 - width / 2.0).round();
+                        let y = y_shift + ((height as f64 - DEFAULT_ICON_SIZE as f64) / 2.0).round();
 
-                    svg.render_document(
-                        c,
-                        &Rectangle::new(x, y, DEFAULT_ICON_SIZE as f64, DEFAULT_ICON_SIZE as f64),
-                    )
-                    .unwrap();
-                }
-                if battery_mode.should_draw_text() {
-                    c.move_to(
-                        button_left_edge
-                            + (button_width as f64 / 2.0 - width / 2.0 + text_offset)
-                                .round(),
-                        y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                    );
-                    c.show_text(&percent_str).unwrap();
+                        svg.render_document(
+                            c,
+                            &Rectangle::new(x, y, DEFAULT_ICON_SIZE as f64, DEFAULT_ICON_SIZE as f64),
+                        )
+                        .unwrap();
+                    }
+                    if battery_mode.should_draw_text() {
+                        c.move_to(
+                            button_left_edge
+                                + (button_width as f64 / 2.0 - width / 2.0 + text_offset)
+                                    .round(),
+                            y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                        );
+                        c.show_text(&percent_str).unwrap();
+                    }
                 }
             }
             ButtonImage::CpuUsage(icon) => {
                 if let Some(mgr) = sysinfo_mgr {
                     if let Some(svg) = icon {
-                        // Icon + text layout
                         let icon_size = self.icon_width.min(self.icon_height);
                         let cpu_text = format!("{:.0}%", mgr.get_cpu_usage());
                         let extents = c.text_extents(&cpu_text).unwrap();
                         let spacing = 4.0;
-                        let total_width = icon_size + spacing + extents.width();
-                        let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
                         
-                        let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
-                        svg.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
-                            .unwrap();
-                        
-                        c.move_to(
-                            start_x + icon_size + spacing,
-                            y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                        );
-                        c.show_text(&cpu_text).unwrap();
+                        if self.vertical_layout {
+                            // Vertical layout: icon on top, text below
+                            let total_height = icon_size + spacing + extents.height();
+                            let start_y = y_shift + (height as f64 / 2.0 - total_height / 2.0).round();
+                            
+                            let icon_x = button_left_edge + (button_width as f64 / 2.0 - icon_size / 2.0).round();
+                            svg.render_document(c, &Rectangle::new(icon_x, start_y, icon_size, icon_size))
+                                .unwrap();
+                            
+                            c.move_to(
+                                button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                                start_y + icon_size + spacing + extents.height(),
+                            );
+                            c.show_text(&cpu_text).unwrap();
+                        } else {
+                            // Horizontal layout (original)
+                            let total_width = icon_size + spacing + extents.width();
+                            let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+                            
+                            let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+                            svg.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
+                                .unwrap();
+                            
+                            c.move_to(
+                                start_x + icon_size + spacing,
+                                y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                            );
+                            c.show_text(&cpu_text).unwrap();
+                        }
                     } else {
                         // Text only (legacy)
                         let cpu_text = format!("CPU {:.1}%", mgr.get_cpu_usage());
@@ -771,7 +857,6 @@ impl Button {
             ButtonImage::MemoryUsage(icon) => {
                 if let Some(mgr) = sysinfo_mgr {
                     if let Some(svg) = icon {
-                        // Icon + text layout
                         let icon_size = self.icon_width.min(self.icon_height);
                         let (used, total) = mgr.get_memory_usage();
                         let mem_text = format!("{:.1}/{:.1}G", 
@@ -779,18 +864,36 @@ impl Button {
                             total as f64 / 1024.0 / 1024.0 / 1024.0);
                         let extents = c.text_extents(&mem_text).unwrap();
                         let spacing = 4.0;
-                        let total_width = icon_size + spacing + extents.width();
-                        let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
                         
-                        let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
-                        svg.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
-                            .unwrap();
-                        
-                        c.move_to(
-                            start_x + icon_size + spacing,
-                            y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                        );
-                        c.show_text(&mem_text).unwrap();
+                        if self.vertical_layout {
+                            // Vertical layout: icon on top, text below
+                            let total_height = icon_size + spacing + extents.height();
+                            let start_y = y_shift + (height as f64 / 2.0 - total_height / 2.0).round();
+                            
+                            let icon_x = button_left_edge + (button_width as f64 / 2.0 - icon_size / 2.0).round();
+                            svg.render_document(c, &Rectangle::new(icon_x, start_y, icon_size, icon_size))
+                                .unwrap();
+                            
+                            c.move_to(
+                                button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                                start_y + icon_size + spacing + extents.height(),
+                            );
+                            c.show_text(&mem_text).unwrap();
+                        } else {
+                            // Horizontal layout (original)
+                            let total_width = icon_size + spacing + extents.width();
+                            let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+                            
+                            let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+                            svg.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
+                                .unwrap();
+                            
+                            c.move_to(
+                                start_x + icon_size + spacing,
+                                y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                            );
+                            c.show_text(&mem_text).unwrap();
+                        }
                     } else {
                         // Text only (legacy)
                         let (used, total) = mgr.get_memory_usage();
@@ -820,7 +923,6 @@ impl Button {
                     let workspace = mgr.get_active_workspace();
                     
                     if let Some(svg) = icon {
-                        // Render icon + text layout (similar to battery rendering)
                         let icon_size = self.icon_width.min(self.icon_height);
                         let ws_text = if workspace.is_empty() {
                             "?".to_string()
@@ -828,25 +930,37 @@ impl Button {
                             workspace.clone()
                         };
                         let extents = c.text_extents(&ws_text).unwrap();
-                        
-                        // Calculate total width and spacing
                         let spacing = 4.0;
-                        let total_width = icon_size + spacing + extents.width();
                         
-                        // Center the entire (icon + text) block
-                        let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
-                        
-                        // Render icon
-                        let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
-                        svg.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
-                            .unwrap();
-                        
-                        // Render text (positioned using same method as battery)
-                        c.move_to(
-                            start_x + icon_size + spacing,
-                            y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                        );
-                        c.show_text(&ws_text).unwrap();
+                        if self.vertical_layout {
+                            // Vertical layout: icon on top, text below
+                            let total_height = icon_size + spacing + extents.height();
+                            let start_y = y_shift + (height as f64 / 2.0 - total_height / 2.0).round();
+                            
+                            let icon_x = button_left_edge + (button_width as f64 / 2.0 - icon_size / 2.0).round();
+                            svg.render_document(c, &Rectangle::new(icon_x, start_y, icon_size, icon_size))
+                                .unwrap();
+                            
+                            c.move_to(
+                                button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                                start_y + icon_size + spacing + extents.height(),
+                            );
+                            c.show_text(&ws_text).unwrap();
+                        } else {
+                            // Horizontal layout (original)
+                            let total_width = icon_size + spacing + extents.width();
+                            let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+                            
+                            let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+                            svg.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
+                                .unwrap();
+                            
+                            c.move_to(
+                                start_x + icon_size + spacing,
+                                y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                            );
+                            c.show_text(&ws_text).unwrap();
+                        }
                     } else {
                         // Text only (legacy behavior)
                         let ws_text = format!("WS: {}", workspace);
@@ -1060,7 +1174,7 @@ impl FunctionLayer {
             c.paint().unwrap();
         }
         c.set_font_face(&config.font_face);
-        c.set_font_size(32.0);
+        c.set_font_size(config.font_size);
 
         for i in 0..self.buttons.len() {
             let end = if i + 1 < self.buttons.len() {
@@ -1141,6 +1255,12 @@ impl FunctionLayer {
             }
             if button_visible {
                 c.set_source_rgb(1.0, 1.0, 1.0);
+                // Set per-button font size if specified, otherwise use global config
+                if let Some(fs) = button.font_size {
+                    c.set_font_size(fs);
+                } else {
+                    c.set_font_size(config.font_size);
+                }
                 button.render(
                     &c,
                     height,
