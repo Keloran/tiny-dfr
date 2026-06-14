@@ -44,7 +44,6 @@ mod display;
 mod fonts;
 mod pixel_shift;
 mod sysinfo_manager;
-mod t2_usb;
 
 use crate::config::ConfigManager;
 use backlight::BacklightManager;
@@ -58,6 +57,9 @@ const BUTTON_COLOR_INACTIVE: f64 = 0.200;
 const BUTTON_COLOR_ACTIVE: f64 = 0.400;
 const DEFAULT_ICON_SIZE: i32 = 48;
 const TIMEOUT_MS: i32 = 10 * 1000;
+const EXIT_DRM_UNAVAILABLE: i32 = 75;
+const DRM_OPEN_ATTEMPTS: u32 = 6;
+const DRM_OPEN_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BatteryState {
@@ -639,7 +641,7 @@ impl Button {
         } else if let Some(label) = cfg.layer_toggle {
             Button::new_layer_toggle(label)
         } else if let Some(time) = cfg.time {
-            Button::new_time(cfg.action, &time, cfg.locale.as_deref())
+            Button::new_time(cfg.action, cfg.command, &time, cfg.locale.as_deref())
         } else if let Some(battery_mode) = cfg.battery {
             if let Some(battery) = find_battery_device() {
                 Button::new_battery(cfg.action, cfg.command, battery, battery_mode, cfg.theme)
@@ -842,7 +844,7 @@ impl Button {
         }
     }
 
-    fn new_time(action: Vec<Key>, format: &str, locale_str: Option<&str>) -> Button {
+    fn new_time(action: Vec<Key>, command: Option<String>, format: &str, locale_str: Option<&str>) -> Button {
         let format_str = if format == "24hr" {
             "%H:%M    %a %-e %b"
         } else if format == "12hr" {
@@ -864,7 +866,7 @@ impl Button {
             active: false,
             changed: false,
             image: ButtonImage::Time(format_items, locale),
-            command: None,
+            command,
             icon_width: 0.0,
             icon_height: 0.0,
             stacked: false,
@@ -1427,30 +1429,40 @@ where
     );
 }
 
-fn main() {
-    // Check if we're on a T2 MacBook and initialize if needed
-    // This can be disabled by setting TINY_DFR_SKIP_T2_INIT=1
-    let skip_t2_init = std::env::var("TINY_DFR_SKIP_T2_INIT").unwrap_or_default() == "1";
-    
-    if !skip_t2_init && t2_usb::is_t2_macbook() {
-        println!("Detected T2 MacBook - initializing Touch Bar...");
-        let mut t2 = t2_usb::T2TouchBar::new();
-        match t2.initialize() {
-            Ok(_) => {
-                println!("T2 Touch Bar initialized successfully");
-                // Extra delay to ensure USB subsystem has fully stabilized
-                // This prevents input devices from being grabbed in an inconsistent state
-                println!("Allowing USB subsystem to stabilize...");
-                std::thread::sleep(std::time::Duration::from_secs(3));
-            },
-            Err(e) => {
-                eprintln!("Warning: T2 initialization failed: {}", e);
-                eprintln!("Continuing anyway - the device may already be initialized");
+fn open_drm_backend() -> Option<DrmBackend> {
+    let mut last_error = None;
+
+    for attempt in 1..=DRM_OPEN_ATTEMPTS {
+        match DrmBackend::open_card() {
+            Ok(drm) => return Some(drm),
+            Err(err) => {
+                last_error = Some(err);
+                if attempt < DRM_OPEN_ATTEMPTS {
+                    eprintln!(
+                        "Touch Bar DRM device unavailable, retrying ({attempt}/{DRM_OPEN_ATTEMPTS})"
+                    );
+                    std::thread::sleep(DRM_OPEN_RETRY_DELAY);
+                }
             }
         }
     }
 
-    let mut drm = DrmBackend::open_card().unwrap();
+    if let Some(err) = last_error {
+        eprintln!("Touch Bar DRM device unavailable after retries: {err}");
+    }
+    eprintln!("Not restarting automatically; fix the DRM owner/seat and restart tiny-dfr.service");
+    None
+}
+
+fn main() {
+    if !DrmBackend::touchbar_card_present() {
+        eprintln!("Touch Bar DRM card is not present; not touching USB");
+        std::process::exit(EXIT_DRM_UNAVAILABLE);
+    }
+
+    let Some(mut drm) = open_drm_backend() else {
+        std::process::exit(EXIT_DRM_UNAVAILABLE);
+    };
     let (height, width) = drm.mode().size();
     if panic::catch_unwind(AssertUnwindSafe(|| real_main(&mut drm))).is_ok() {
         return;

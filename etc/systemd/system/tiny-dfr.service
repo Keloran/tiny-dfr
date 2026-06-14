@@ -10,6 +10,7 @@ StartLimitBurst=3
 [Service]
 ExecStart=/usr/bin/tiny-dfr
 Restart=on-failure
+RestartPreventExitStatus=75
 RestartSec=5s
 # Give the service time to initialize before systemd considers it started
 # This prevents systemd from killing it during USB reset

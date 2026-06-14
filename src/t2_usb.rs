@@ -138,9 +138,6 @@ impl T2TouchBar {
         self.wait_for_enumeration(30)?;
 
         println!("Performing USB reset...");
-        // Store the original path before reset
-        let original_path = self.usb_device_path.clone();
-        
         if let Err(e) = self.reset() {
             eprintln!("Warning: USB reset failed: {}", e);
             eprintln!("Device may already be initialized, continuing anyway...");

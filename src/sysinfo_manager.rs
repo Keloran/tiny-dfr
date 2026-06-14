@@ -318,8 +318,4 @@ impl SystemInfoManager {
     pub fn hyprland_available(&self) -> bool {
         self.info.lock().unwrap().hyprland_available
     }
-
-    pub fn should_refresh(&self) -> bool {
-        self.info.lock().unwrap().last_update.elapsed() > Duration::from_secs(1)
-    }
 }
