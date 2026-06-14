@@ -20,6 +20,7 @@ pub struct Config {
     pub show_button_outlines: bool,
     pub enable_pixel_shift: bool,
     pub font_face: FontFace,
+    pub font_size: f64,
     pub adaptive_brightness: bool,
     pub active_brightness: u32,
     pub double_press_switch_layers: u32,
@@ -33,6 +34,7 @@ struct ConfigProxy {
     show_button_outlines: Option<bool>,
     enable_pixel_shift: Option<bool>,
     font_template: Option<String>,
+    font_size: Option<f64>,
     adaptive_brightness: Option<bool>,
     active_brightness: Option<u32>,
     double_press_switch_layers: Option<u32>,
@@ -96,6 +98,9 @@ pub struct ButtonConfig {
     pub stretch: Option<usize>,
     pub icon_width: Option<i32>,
     pub icon_height: Option<i32>,
+    #[serde(default)]
+    pub vertical_layout: bool,
+    pub font_size: Option<f64>,
 }
 
 fn load_font(name: &str) -> FontFace {
@@ -168,6 +173,8 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
                     active_workspace: false,
                     icon_width: None,
                     icon_height: None,
+                    vertical_layout: false,
+                    font_size: None,
                 },
             );
         }
@@ -192,6 +199,7 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
         enable_pixel_shift: base.enable_pixel_shift.unwrap(),
         adaptive_brightness: base.adaptive_brightness.unwrap(),
         font_face: load_font(&base.font_template.unwrap()),
+        font_size: base.font_size.unwrap_or(32.0),
         active_brightness: base.active_brightness.unwrap(),
         double_press_switch_layers: base.double_press_switch_layers.unwrap(),
         drop_privileges: base.drop_privileges.unwrap_or(true),
