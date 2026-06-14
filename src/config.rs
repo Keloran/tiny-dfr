@@ -99,8 +99,9 @@ pub struct ButtonConfig {
     pub icon_width: Option<i32>,
     pub icon_height: Option<i32>,
     #[serde(default)]
-    pub vertical_layout: bool,
+    pub stacked: bool,
     pub font_size: Option<f64>,
+    pub max_title_length: Option<usize>,
 }
 
 fn load_font(name: &str) -> FontFace {
@@ -130,6 +131,7 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
         base.show_button_outlines = user.show_button_outlines.or(base.show_button_outlines);
         base.enable_pixel_shift = user.enable_pixel_shift.or(base.enable_pixel_shift);
         base.font_template = user.font_template.or(base.font_template);
+        base.font_size = user.font_size.or(base.font_size);
         base.adaptive_brightness = user.adaptive_brightness.or(base.adaptive_brightness);
         base.system_info_layer_keys = user.system_info_layer_keys.or(base.system_info_layer_keys);
         base.primary_layer_keys = user.primary_layer_keys.or(base.primary_layer_keys);
@@ -173,8 +175,9 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
                     active_workspace: false,
                     icon_width: None,
                     icon_height: None,
-                    vertical_layout: false,
+                    stacked: false,
                     font_size: None,
+                    max_title_length: None,
                 },
             );
         }
