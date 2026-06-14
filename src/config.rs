@@ -20,6 +20,7 @@ pub struct Config {
     pub show_button_outlines: bool,
     pub enable_pixel_shift: bool,
     pub font_face: FontFace,
+    pub font_size: f64,
     pub adaptive_brightness: bool,
     pub active_brightness: u32,
     pub double_press_switch_layers: u32,
@@ -33,6 +34,7 @@ struct ConfigProxy {
     show_button_outlines: Option<bool>,
     enable_pixel_shift: Option<bool>,
     font_template: Option<String>,
+    font_size: Option<f64>,
     adaptive_brightness: Option<bool>,
     active_brightness: Option<u32>,
     double_press_switch_layers: Option<u32>,
@@ -96,6 +98,10 @@ pub struct ButtonConfig {
     pub stretch: Option<usize>,
     pub icon_width: Option<i32>,
     pub icon_height: Option<i32>,
+    #[serde(default)]
+    pub stacked: bool,
+    pub font_size: Option<f64>,
+    pub max_title_length: Option<usize>,
 }
 
 fn load_font(name: &str) -> FontFace {
@@ -125,6 +131,7 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
         base.show_button_outlines = user.show_button_outlines.or(base.show_button_outlines);
         base.enable_pixel_shift = user.enable_pixel_shift.or(base.enable_pixel_shift);
         base.font_template = user.font_template.or(base.font_template);
+        base.font_size = user.font_size.or(base.font_size);
         base.adaptive_brightness = user.adaptive_brightness.or(base.adaptive_brightness);
         base.system_info_layer_keys = user.system_info_layer_keys.or(base.system_info_layer_keys);
         base.primary_layer_keys = user.primary_layer_keys.or(base.primary_layer_keys);
@@ -168,6 +175,9 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
                     active_workspace: false,
                     icon_width: None,
                     icon_height: None,
+                    stacked: false,
+                    font_size: None,
+                    max_title_length: None,
                 },
             );
         }
@@ -192,6 +202,7 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
         enable_pixel_shift: base.enable_pixel_shift.unwrap(),
         adaptive_brightness: base.adaptive_brightness.unwrap(),
         font_face: load_font(&base.font_template.unwrap()),
+        font_size: base.font_size.unwrap_or(32.0),
         active_brightness: base.active_brightness.unwrap(),
         double_press_switch_layers: base.double_press_switch_layers.unwrap(),
         drop_privileges: base.drop_privileges.unwrap_or(true),
