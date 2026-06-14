@@ -111,8 +111,345 @@ struct Button {
     command: Option<String>,
     icon_width: f64,
     icon_height: f64,
-    vertical_layout: bool,
+    stacked: bool,
     font_size: Option<f64>,
+    max_title_length: Option<usize>,
+}
+
+// Unified rendering structures
+enum ButtonContent {
+    // Simple text centered
+    SimpleText(String),
+    // Icon centered
+    Icon(Handle, f64), // Handle and size
+    // Bitmap centered
+    Bitmap(ImageSurface, f64, f64), // Surface, width, height
+    // Icon + single line of text (horizontal or stacked)
+    IconWithText {
+        icon: Handle,
+        icon_size: f64,
+        text: String,
+    },
+    // Icon + multiple lines of text (always stacked)
+    IconWithMultilineText {
+        icon: Handle,
+        icon_size: f64,
+        lines: Vec<String>,
+    },
+    // Clipped text (for window titles that might overflow)
+    ClippedText(String),
+    // Nothing (spacer)
+    Empty,
+}
+
+impl Button {
+    // Get the content to render based on button type
+    fn get_content(&self, sysinfo_mgr: Option<&SystemInfoManager>) -> ButtonContent {
+        match &self.image {
+            ButtonImage::Text(text) | ButtonImage::LayerToggle(text) => {
+                ButtonContent::SimpleText(text.clone())
+            }
+            ButtonImage::Svg(svg) | ButtonImage::LayerToggleIcon(svg) => {
+                ButtonContent::Icon(svg.clone(), self.icon_width.min(self.icon_height))
+            }
+            ButtonImage::Bitmap(surf) => {
+                ButtonContent::Bitmap(surf.clone(), self.icon_width, self.icon_height)
+            }
+            ButtonImage::Time(format, locale) => {
+                let current_time = Local::now();
+                let formatted_time = current_time
+                    .format_localized_with_items(format.iter(), *locale)
+                    .to_string();
+                ButtonContent::SimpleText(formatted_time)
+            }
+            ButtonImage::Battery(battery, battery_mode, icons) => {
+                let (capacity, state) = get_battery_state(battery);
+                let icon = if battery_mode.should_draw_icon() {
+                    Some(match state {
+                        BatteryState::Charging => match capacity {
+                            0..=20 => &icons.charging[0],
+                            21..=30 => &icons.charging[1],
+                            31..=50 => &icons.charging[2],
+                            51..=60 => &icons.charging[3],
+                            61..=80 => &icons.charging[4],
+                            81..=99 => &icons.charging[5],
+                            _ => &icons.charging[6],
+                        },
+                        _ => match capacity {
+                            0 => &icons.plain[0],
+                            1..=20 => &icons.plain[1],
+                            21..=30 => &icons.plain[2],
+                            31..=50 => &icons.plain[3],
+                            51..=60 => &icons.plain[4],
+                            61..=80 => &icons.plain[5],
+                            81..=99 => &icons.plain[6],
+                            _ => &icons.plain[7],
+                        },
+                    })
+                } else if state == BatteryState::Charging {
+                    Some(&icons.bolt)
+                } else {
+                    None
+                };
+
+                if self.stacked && battery_mode.should_draw_text() {
+                    let percent_str = format!("{:.0}%", capacity);
+                    let profile_str = get_power_profile().unwrap_or_default();
+                    let lines = if profile_str.is_empty() {
+                        vec![percent_str]
+                    } else {
+                        vec![percent_str, profile_str]
+                    };
+                    
+                    if let Some(icon_handle) = icon {
+                        ButtonContent::IconWithMultilineText {
+                            icon: icon_handle.clone(),
+                            icon_size: DEFAULT_ICON_SIZE as f64,
+                            lines,
+                        }
+                    } else {
+                        ButtonContent::SimpleText(lines.join(" "))
+                    }
+                } else if let Some(icon_handle) = icon {
+                    if battery_mode.should_draw_text() {
+                        let text = if let Some(profile) = get_power_profile() {
+                            format!("{:.0}% {}", capacity, profile)
+                        } else {
+                            format!("{:.0}%", capacity)
+                        };
+                        ButtonContent::IconWithText {
+                            icon: icon_handle.clone(),
+                            icon_size: DEFAULT_ICON_SIZE as f64,
+                            text,
+                        }
+                    } else {
+                        ButtonContent::Icon(icon_handle.clone(), DEFAULT_ICON_SIZE as f64)
+                    }
+                } else {
+                    let text = if let Some(profile) = get_power_profile() {
+                        format!("{:.0}% {}", capacity, profile)
+                    } else {
+                        format!("{:.0}%", capacity)
+                    };
+                    ButtonContent::SimpleText(text)
+                }
+            }
+            ButtonImage::CpuUsage(icon) => {
+                if let Some(mgr) = sysinfo_mgr {
+                    if let Some(svg) = icon {
+                        let cpu_text = format!("{:.0}%", mgr.get_cpu_usage());
+                        ButtonContent::IconWithText {
+                            icon: svg.clone(),
+                            icon_size: self.icon_width.min(self.icon_height),
+                            text: cpu_text,
+                        }
+                    } else {
+                        let cpu_text = format!("CPU {:.1}%", mgr.get_cpu_usage());
+                        ButtonContent::SimpleText(cpu_text)
+                    }
+                } else {
+                    ButtonContent::Empty
+                }
+            }
+            ButtonImage::MemoryUsage(icon) => {
+                if let Some(mgr) = sysinfo_mgr {
+                    if let Some(svg) = icon {
+                        let (used, total) = mgr.get_memory_usage();
+                        if self.stacked {
+                            let lines = vec![
+                                format!("used: {:.1}G", used as f64 / 1024.0 / 1024.0 / 1024.0),
+                                format!("total: {:.1}G", total as f64 / 1024.0 / 1024.0 / 1024.0),
+                            ];
+                            ButtonContent::IconWithMultilineText {
+                                icon: svg.clone(),
+                                icon_size: self.icon_width.min(self.icon_height),
+                                lines,
+                            }
+                        } else {
+                            let mem_text = format!(
+                                "{:.1}/{:.1}G",
+                                used as f64 / 1024.0 / 1024.0 / 1024.0,
+                                total as f64 / 1024.0 / 1024.0 / 1024.0
+                            );
+                            ButtonContent::IconWithText {
+                                icon: svg.clone(),
+                                icon_size: self.icon_width.min(self.icon_height),
+                                text: mem_text,
+                            }
+                        }
+                    } else {
+                        let (used, total) = mgr.get_memory_usage();
+                        let mem_text = format!(
+                            "MEM {:.1}G/{:.1}G",
+                            used as f64 / 1024.0 / 1024.0 / 1024.0,
+                            total as f64 / 1024.0 / 1024.0 / 1024.0
+                        );
+                        ButtonContent::SimpleText(mem_text)
+                    }
+                } else {
+                    ButtonContent::Empty
+                }
+            }
+            ButtonImage::ActiveWindow => {
+                if let Some(mgr) = sysinfo_mgr {
+                    ButtonContent::ClippedText(mgr.get_active_window())
+                } else {
+                    ButtonContent::Empty
+                }
+            }
+            ButtonImage::ActiveWorkspace(icon) => {
+                if let Some(mgr) = sysinfo_mgr {
+                    let workspace = mgr.get_active_workspace();
+                    if let Some(svg) = icon {
+                        let ws_text = if workspace.is_empty() {
+                            "?".to_string()
+                        } else {
+                            workspace.clone()
+                        };
+                        ButtonContent::IconWithText {
+                            icon: svg.clone(),
+                            icon_size: self.icon_width.min(self.icon_height),
+                            text: ws_text,
+                        }
+                    } else {
+                        ButtonContent::SimpleText(format!("WS: {}", workspace))
+                    }
+                } else {
+                    ButtonContent::Empty
+                }
+            }
+            ButtonImage::Spacer => ButtonContent::Empty,
+        }
+    }
+
+    // Unified render function that handles all button types
+    fn render_content(
+        &self,
+        c: &Context,
+        content: ButtonContent,
+        height: i32,
+        button_left_edge: f64,
+        button_width: u64,
+        y_shift: f64,
+    ) {
+        match content {
+            ButtonContent::SimpleText(text) => {
+                let extents = c.text_extents(&text).unwrap();
+                c.move_to(
+                    button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                    y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                );
+                c.show_text(&text).unwrap();
+            }
+            ButtonContent::Icon(svg, size) => {
+                let x = button_left_edge + (button_width as f64 / 2.0 - size / 2.0).round();
+                let y = y_shift + ((height as f64 - size) / 2.0).round();
+                svg.render_document(c, &Rectangle::new(x, y, size, size))
+                    .unwrap();
+            }
+            ButtonContent::Bitmap(surf, width, height_img) => {
+                let x = button_left_edge + (button_width as f64 / 2.0 - width / 2.0).round();
+                let y = y_shift + ((height as f64 - height_img) / 2.0).round();
+                c.set_source_surface(&surf, x, y).unwrap();
+                c.rectangle(x, y, width, height_img);
+                c.fill().unwrap();
+            }
+            ButtonContent::IconWithText { icon, icon_size, text } => {
+                let extents = c.text_extents(&text).unwrap();
+                let spacing = 4.0;
+
+                if self.stacked {
+                    // Stacked: icon on left, text on right
+                    let total_width = icon_size + spacing + extents.width();
+                    let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+
+                    // Icon vertically centered
+                    let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+                    icon.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
+                        .unwrap();
+
+                    // Text vertically centered, to the right of icon
+                    c.move_to(
+                        start_x + icon_size + spacing,
+                        y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                    );
+                    c.show_text(&text).unwrap();
+                } else {
+                    // Horizontal: same layout
+                    let total_width = icon_size + spacing + extents.width();
+                    let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+
+                    let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+                    icon.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
+                        .unwrap();
+
+                    c.move_to(
+                        start_x + icon_size + spacing,
+                        y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                    );
+                    c.show_text(&text).unwrap();
+                }
+            }
+            ButtonContent::IconWithMultilineText { icon, icon_size, lines } => {
+                let spacing = 4.0;
+                let text_spacing = 2.0;
+
+                // Measure all lines
+                let mut line_extents = Vec::new();
+                let mut max_width: f64 = 0.0;
+                let mut total_height: f64 = 0.0;
+
+                for (i, line) in lines.iter().enumerate() {
+                    let extents = c.text_extents(line).unwrap();
+                    max_width = max_width.max(extents.width());
+                    total_height += extents.height();
+                    if i < lines.len() - 1 {
+                        total_height += text_spacing;
+                    }
+                    line_extents.push(extents);
+                }
+
+                let total_width = icon_size + spacing + max_width;
+                let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+
+                // Icon vertically centered
+                let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+                icon.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
+                    .unwrap();
+
+                // Text block vertically centered
+                let text_start_y = y_shift + (height as f64 / 2.0 - total_height / 2.0).round();
+                let text_x = start_x + icon_size + spacing;
+
+                let mut current_y = text_start_y;
+                for (i, (line, extents)) in lines.iter().zip(line_extents.iter()).enumerate() {
+                    c.move_to(text_x, current_y + extents.height());
+                    c.show_text(line).unwrap();
+                    if i < lines.len() - 1 {
+                        current_y += extents.height() + text_spacing;
+                    }
+                }
+            }
+            ButtonContent::ClippedText(text) => {
+                let extents = c.text_extents(&text).unwrap();
+
+                // Save context and set up clipping
+                c.save().unwrap();
+                c.rectangle(button_left_edge, y_shift, button_width as f64, height as f64);
+                c.clip();
+
+                c.move_to(
+                    button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                    y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                );
+                c.show_text(&text).unwrap();
+
+                // Restore context
+                c.restore().unwrap();
+            }
+            ButtonContent::Empty => {}
+        }
+    }
 }
 
 fn try_load_svg(path: &str) -> Result<ButtonImage> {
@@ -286,8 +623,9 @@ fn get_power_profile() -> Option<String> {
 
 impl Button {
     fn with_config(cfg: ButtonConfig) -> Button {
-        let vertical_layout = cfg.vertical_layout;
+        let stacked = cfg.stacked;
         let font_size = cfg.font_size;
+        let max_title_length = cfg.max_title_length;
         
         let mut button = if let Some(text) = cfg.text {
             Button::new_text(text, cfg.action)
@@ -349,8 +687,9 @@ impl Button {
             Button::new_spacer()
         };
         
-        button.vertical_layout = vertical_layout;
+        button.stacked = stacked;
         button.font_size = font_size;
+        button.max_title_length = max_title_length;
         button
     }
     fn new_spacer() -> Button {
@@ -362,8 +701,9 @@ impl Button {
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
-            vertical_layout: false,
+            stacked: false,
             font_size: None,
+            max_title_length: None,
         }
     }
     fn new_text(text: String, action: Vec<Key>) -> Button {
@@ -375,8 +715,9 @@ impl Button {
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
-            vertical_layout: false,
+            stacked: false,
             font_size: None,
+            max_title_length: None,
         }
     }
     fn new_layer_toggle(label: String) -> Button {
@@ -388,8 +729,9 @@ impl Button {
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
-            vertical_layout: false,
+            stacked: false,
             font_size: None,
+            max_title_length: None,
         }
     }
     fn new_layer_toggle_icon(
@@ -414,8 +756,9 @@ impl Button {
             icon_height: icon_height as f64,
             active: false,
             changed: false,
-            vertical_layout: false,
+            stacked: false,
             font_size: None,
+            max_title_length: None,
         }
     }
     fn new_icon(
@@ -435,8 +778,9 @@ impl Button {
             icon_height: icon_height as f64,
             active: false,
             changed: false,
-            vertical_layout: false,
+            stacked: false,
             font_size: None,
+            max_title_length: None,
         }
     }
     fn load_battery_image(icon: &str, theme: Option<impl AsRef<str>>) -> Handle {
@@ -492,8 +836,9 @@ impl Button {
             command,
             icon_width: 0.0,
             icon_height: 0.0,
-            vertical_layout: false,
+            stacked: false,
             font_size: None,
+            max_title_length: None,
         }
     }
 
@@ -522,8 +867,9 @@ impl Button {
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
-            vertical_layout: false,
+            stacked: false,
             font_size: None,
+            max_title_length: None,
         }
     }
     fn new_cpu_usage(
@@ -555,8 +901,9 @@ impl Button {
             command,
             icon_width: w,
             icon_height: h,
-            vertical_layout: false,
+            stacked: false,
             font_size: None,
+            max_title_length: None,
         }
     }
     fn new_memory_usage(
@@ -588,8 +935,9 @@ impl Button {
             command,
             icon_width: w,
             icon_height: h,
-            vertical_layout: false,
+            stacked: false,
             font_size: None,
+            max_title_length: None,
         }
     }
     fn new_active_window(action: Vec<Key>) -> Button {
@@ -601,8 +949,9 @@ impl Button {
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
-            vertical_layout: false,
+            stacked: false,
             font_size: None,
+            max_title_length: None,
         }
     }
     fn new_active_workspace(
@@ -634,8 +983,9 @@ impl Button {
             command,
             icon_width: w,
             icon_height: h,
-            vertical_layout: false,
+            stacked: false,
             font_size: None,
+            max_title_length: None,
         }
     }
     fn needs_faster_refresh(&self) -> bool {
@@ -665,316 +1015,11 @@ impl Button {
         y_shift: f64,
         sysinfo_mgr: Option<&SystemInfoManager>,
     ) {
-        match &self.image {
-            ButtonImage::Text(text) | ButtonImage::LayerToggle(text) => {
-                let extents = c.text_extents(text).unwrap();
-                c.move_to(
-                    button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
-                    y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                );
-                c.show_text(text).unwrap();
-            }
-            ButtonImage::Svg(svg) | ButtonImage::LayerToggleIcon(svg) => {
-                let x =
-                    button_left_edge + (button_width as f64 / 2.0 - self.icon_width / 2.0).round();
-                let y = y_shift + ((height as f64 - self.icon_height) / 2.0).round();
-
-                svg.render_document(c, &Rectangle::new(x, y, self.icon_width, self.icon_height))
-                    .unwrap();
-            }
-            ButtonImage::Bitmap(surf) => {
-                let x =
-                    button_left_edge + (button_width as f64 / 2.0 - self.icon_width / 2.0).round();
-                let y = y_shift + ((height as f64 - self.icon_height) / 2.0).round();
-                c.set_source_surface(surf, x, y).unwrap();
-                c.rectangle(x, y, self.icon_width, self.icon_height);
-                c.fill().unwrap();
-            }
-            ButtonImage::Time(format, locale) => {
-                let current_time = Local::now();
-                let formatted_time = current_time
-                    .format_localized_with_items(format.iter(), *locale)
-                    .to_string();
-                let time_extents = c.text_extents(&formatted_time).unwrap();
-                c.move_to(
-                    button_left_edge
-                        + (button_width as f64 / 2.0 - time_extents.width() / 2.0).round(),
-                    y_shift + (height as f64 / 2.0 + time_extents.height() / 2.0).round(),
-                );
-                c.show_text(&formatted_time).unwrap();
-            }
-            ButtonImage::Battery(battery, battery_mode, icons) => {
-                let (capacity, state) = get_battery_state(battery);
-                let icon = if battery_mode.should_draw_icon() {
-                    Some(match state {
-                        BatteryState::Charging => match capacity {
-                            0..=20 => &icons.charging[0],
-                            21..=30 => &icons.charging[1],
-                            31..=50 => &icons.charging[2],
-                            51..=60 => &icons.charging[3],
-                            61..=80 => &icons.charging[4],
-                            81..=99 => &icons.charging[5],
-                            _ => &icons.charging[6],
-                        },
-                        _ => match capacity {
-                            0 => &icons.plain[0],
-                            1..=20 => &icons.plain[1],
-                            21..=30 => &icons.plain[2],
-                            31..=50 => &icons.plain[3],
-                            51..=60 => &icons.plain[4],
-                            61..=80 => &icons.plain[5],
-                            81..=99 => &icons.plain[6],
-                            _ => &icons.plain[7],
-                        },
-                    })
-                } else if state == BatteryState::Charging {
-                    Some(&icons.bolt)
-                } else {
-                    None
-                };
-                let percent_str = if let Some(profile) = get_power_profile() {
-                    format!("{:.0}% {}", capacity, profile)
-                } else {
-                    format!("{:.0}%", capacity)
-                };
-                let extents = c.text_extents(&percent_str).unwrap();
-                let spacing = 3.0;
-                
-                if self.vertical_layout {
-                    // Vertical layout: icon on top, text below
-                    let icon_size = DEFAULT_ICON_SIZE as f64;
-                    let total_height = if icon.is_some() && battery_mode.should_draw_text() {
-                        icon_size + spacing + extents.height()
-                    } else if icon.is_some() {
-                        icon_size
-                    } else {
-                        extents.height()
-                    };
-                    
-                    let start_y = y_shift + (height as f64 / 2.0 - total_height / 2.0).round();
-                    
-                    if let Some(svg) = icon {
-                        let icon_x = button_left_edge + (button_width as f64 / 2.0 - icon_size / 2.0).round();
-                        svg.render_document(
-                            c,
-                            &Rectangle::new(icon_x, start_y, icon_size, icon_size),
-                        )
-                        .unwrap();
-                    }
-                    
-                    if battery_mode.should_draw_text() {
-                        let text_y = if icon.is_some() {
-                            start_y + icon_size + spacing + extents.height()
-                        } else {
-                            start_y + extents.height()
-                        };
-                        c.move_to(
-                            button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
-                            text_y,
-                        );
-                        c.show_text(&percent_str).unwrap();
-                    }
-                } else {
-                    // Horizontal layout (original)
-                    let mut width = extents.width();
-                    let mut text_offset = 0.0;
-                    if let Some(svg) = icon {
-                        if !battery_mode.should_draw_text() {
-                            width = DEFAULT_ICON_SIZE as f64;
-                        } else {
-                            width += DEFAULT_ICON_SIZE as f64 + spacing;
-                        }
-                        text_offset = DEFAULT_ICON_SIZE as f64 + spacing;
-                        let x = button_left_edge + (button_width as f64 / 2.0 - width / 2.0).round();
-                        let y = y_shift + ((height as f64 - DEFAULT_ICON_SIZE as f64) / 2.0).round();
-
-                        svg.render_document(
-                            c,
-                            &Rectangle::new(x, y, DEFAULT_ICON_SIZE as f64, DEFAULT_ICON_SIZE as f64),
-                        )
-                        .unwrap();
-                    }
-                    if battery_mode.should_draw_text() {
-                        c.move_to(
-                            button_left_edge
-                                + (button_width as f64 / 2.0 - width / 2.0 + text_offset)
-                                    .round(),
-                            y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                        );
-                        c.show_text(&percent_str).unwrap();
-                    }
-                }
-            }
-            ButtonImage::CpuUsage(icon) => {
-                if let Some(mgr) = sysinfo_mgr {
-                    if let Some(svg) = icon {
-                        let icon_size = self.icon_width.min(self.icon_height);
-                        let cpu_text = format!("{:.0}%", mgr.get_cpu_usage());
-                        let extents = c.text_extents(&cpu_text).unwrap();
-                        let spacing = 4.0;
-                        
-                        if self.vertical_layout {
-                            // Vertical layout: icon on top, text below
-                            let total_height = icon_size + spacing + extents.height();
-                            let start_y = y_shift + (height as f64 / 2.0 - total_height / 2.0).round();
-                            
-                            let icon_x = button_left_edge + (button_width as f64 / 2.0 - icon_size / 2.0).round();
-                            svg.render_document(c, &Rectangle::new(icon_x, start_y, icon_size, icon_size))
-                                .unwrap();
-                            
-                            c.move_to(
-                                button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
-                                start_y + icon_size + spacing + extents.height(),
-                            );
-                            c.show_text(&cpu_text).unwrap();
-                        } else {
-                            // Horizontal layout (original)
-                            let total_width = icon_size + spacing + extents.width();
-                            let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
-                            
-                            let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
-                            svg.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
-                                .unwrap();
-                            
-                            c.move_to(
-                                start_x + icon_size + spacing,
-                                y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                            );
-                            c.show_text(&cpu_text).unwrap();
-                        }
-                    } else {
-                        // Text only (legacy)
-                        let cpu_text = format!("CPU {:.1}%", mgr.get_cpu_usage());
-                        let extents = c.text_extents(&cpu_text).unwrap();
-                        c.move_to(
-                            button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
-                            y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                        );
-                        c.show_text(&cpu_text).unwrap();
-                    }
-                }
-            }
-            ButtonImage::MemoryUsage(icon) => {
-                if let Some(mgr) = sysinfo_mgr {
-                    if let Some(svg) = icon {
-                        let icon_size = self.icon_width.min(self.icon_height);
-                        let (used, total) = mgr.get_memory_usage();
-                        let mem_text = format!("{:.1}/{:.1}G", 
-                            used as f64 / 1024.0 / 1024.0 / 1024.0,
-                            total as f64 / 1024.0 / 1024.0 / 1024.0);
-                        let extents = c.text_extents(&mem_text).unwrap();
-                        let spacing = 4.0;
-                        
-                        if self.vertical_layout {
-                            // Vertical layout: icon on top, text below
-                            let total_height = icon_size + spacing + extents.height();
-                            let start_y = y_shift + (height as f64 / 2.0 - total_height / 2.0).round();
-                            
-                            let icon_x = button_left_edge + (button_width as f64 / 2.0 - icon_size / 2.0).round();
-                            svg.render_document(c, &Rectangle::new(icon_x, start_y, icon_size, icon_size))
-                                .unwrap();
-                            
-                            c.move_to(
-                                button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
-                                start_y + icon_size + spacing + extents.height(),
-                            );
-                            c.show_text(&mem_text).unwrap();
-                        } else {
-                            // Horizontal layout (original)
-                            let total_width = icon_size + spacing + extents.width();
-                            let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
-                            
-                            let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
-                            svg.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
-                                .unwrap();
-                            
-                            c.move_to(
-                                start_x + icon_size + spacing,
-                                y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                            );
-                            c.show_text(&mem_text).unwrap();
-                        }
-                    } else {
-                        // Text only (legacy)
-                        let (used, total) = mgr.get_memory_usage();
-                        let mem_text = format!("MEM {:.1}G/{:.1}G", used as f64 / 1024.0 / 1024.0 / 1024.0, total as f64 / 1024.0 / 1024.0 / 1024.0);
-                        let extents = c.text_extents(&mem_text).unwrap();
-                        c.move_to(
-                            button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
-                            y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                        );
-                        c.show_text(&mem_text).unwrap();
-                    }
-                }
-            }
-            ButtonImage::ActiveWindow => {
-                if let Some(mgr) = sysinfo_mgr {
-                    let window = mgr.get_active_window();
-                    let extents = c.text_extents(&window).unwrap();
-                    c.move_to(
-                        button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
-                        y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                    );
-                    c.show_text(&window).unwrap();
-                }
-            }
-            ButtonImage::ActiveWorkspace(icon) => {
-                if let Some(mgr) = sysinfo_mgr {
-                    let workspace = mgr.get_active_workspace();
-                    
-                    if let Some(svg) = icon {
-                        let icon_size = self.icon_width.min(self.icon_height);
-                        let ws_text = if workspace.is_empty() {
-                            "?".to_string()
-                        } else {
-                            workspace.clone()
-                        };
-                        let extents = c.text_extents(&ws_text).unwrap();
-                        let spacing = 4.0;
-                        
-                        if self.vertical_layout {
-                            // Vertical layout: icon on top, text below
-                            let total_height = icon_size + spacing + extents.height();
-                            let start_y = y_shift + (height as f64 / 2.0 - total_height / 2.0).round();
-                            
-                            let icon_x = button_left_edge + (button_width as f64 / 2.0 - icon_size / 2.0).round();
-                            svg.render_document(c, &Rectangle::new(icon_x, start_y, icon_size, icon_size))
-                                .unwrap();
-                            
-                            c.move_to(
-                                button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
-                                start_y + icon_size + spacing + extents.height(),
-                            );
-                            c.show_text(&ws_text).unwrap();
-                        } else {
-                            // Horizontal layout (original)
-                            let total_width = icon_size + spacing + extents.width();
-                            let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
-                            
-                            let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
-                            svg.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
-                                .unwrap();
-                            
-                            c.move_to(
-                                start_x + icon_size + spacing,
-                                y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                            );
-                            c.show_text(&ws_text).unwrap();
-                        }
-                    } else {
-                        // Text only (legacy behavior)
-                        let ws_text = format!("WS: {}", workspace);
-                        let extents = c.text_extents(&ws_text).unwrap();
-                        c.move_to(
-                            button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
-                            y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
-                        );
-                        c.show_text(&ws_text).unwrap();
-                    }
-                }
-            }
-            ButtonImage::Spacer => (),
-        }
+        // Get the content for this button
+        let content = self.get_content(sysinfo_mgr);
+        
+        // Render the content using the unified rendering function
+        self.render_content(c, content, height, button_left_edge, button_width, y_shift);
     }
     fn set_active<F>(&mut self, uinput: &mut UInputHandle<F>, active: bool)
     where

@@ -217,7 +217,7 @@ fn get_hyprland_info() -> (String, String, bool) {
             .and_then(|v| v.as_str())
             .filter(|title| !title.trim().is_empty())
             .or_else(|| value.get("class").and_then(|v| v.as_str()))
-            .map(|title| title.trim().chars().take(25).collect())
+            .map(|title| title.trim().to_string())
             .unwrap_or_else(|| "Desktop".to_string()),
         Err(err) => {
             println!("Hyprland active-window query failed: {}", err);

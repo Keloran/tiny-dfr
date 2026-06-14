@@ -1,12 +1,12 @@
 # Three-layer configuration example for tiny-dfr
 # This demonstrates a modern three-layer setup with advanced features:
-# - SystemInfoLayer (Default): System stats with vertical layout and icons
+# - SystemInfoLayer (Default): System stats with stacked layout and icons
 # - PrimaryLayer (FN pressed once): F-keys
 # - MediaLayer (FN double-press): Laptop controls (brightness, audio, media)
 #
 # Features demonstrated:
 # - DefaultLayer: Choose which layer appears on startup
-# - VerticalLayout: Stack icon + text vertically for better readability
+# - Stacked: Icon on left, text stacked vertically on right for better readability
 # - FontSize: Global and per-button font size customization
 # - Icons: Add visual icons to system info displays
 # - Command: Execute shell commands on button press
@@ -41,26 +41,29 @@ ShowEscKey = false
 # Set to false if Hyprland runs as your user and tiny-dfr runs with sudo
 DropPrivileges = false
 
-# SYSTEM INFO LAYER: Modern dashboard with vertical layout
+# SYSTEM INFO LAYER: Modern dashboard with stacked layout
 # This is the default view showing system stats with icons
 SystemInfoLayerKeys = [
-    # CPU usage with vertical layout: icon on top, percentage below
+    # CPU usage with stacked layout: icon left, percentage right
     # Smaller font size for compact display
     { 
         Icon = "cpu", 
         CpuUsage = true, 
-        VerticalLayout = true,
+        Stacked = true,
         FontSize = 16.0,
         Action = [], 
         Stretch = 2,
         Command = "kitty htop"  # Optional: open htop when pressed
     },
     
-    # Memory usage with vertical layout
+    # Memory usage with stacked layout: icon left, used/total stacked right with labels
+    # Layout:  |       |  used: X.XG  |
+    #          | logo  |              |
+    #          |       |  total: X.XG |
     { 
         Icon = "memory", 
         MemoryUsage = true, 
-        VerticalLayout = true,
+        Stacked = true,
         FontSize = 16.0,
         Action = [], 
         Stretch = 2,
@@ -74,21 +77,24 @@ SystemInfoLayerKeys = [
         Stretch = 4 
     },
     
-    # Active workspace with icon and vertical layout
+    # Active workspace with stacked layout: icon left, workspace name right
     { 
         Icon = "window",
         ActiveWorkspace = true, 
-        VerticalLayout = true,
+        Stacked = true,
         FontSize = 16.0,
         Action = [], 
         Stretch = 1,
         Command = "rofi -show window"  # Optional: show window switcher
     },
     
-    # Battery with vertical layout: shows icon, charge level, and power profile stacked
+    # Battery with stacked layout: icon left, percentage & profile stacked right
+    # Layout:  |       |  percentage |
+    #          | logo  |             |
+    #          |       |  profile    |
     { 
         Battery = "both", 
-        VerticalLayout = true,
+        Stacked = true,
         FontSize = 16.0,
         Action = [], 
         Stretch = 2,
@@ -148,14 +154,24 @@ MediaLayerKeys = [
 
 # USAGE NOTES:
 # 
-# Vertical Layout:
-#   Set VerticalLayout = true to stack icon and text vertically instead of side-by-side
-#   Great for buttons with both icon and text (Battery, CPU, Memory, Workspace)
+# Stacked Layout:
+#   Set Stacked = true for a stacked layout: icon on the left, text on the right
+#   For buttons with multiple text items (Battery, Memory), text is stacked vertically
+#   
+#   Battery layout:     |       |  XX%        |
+#                       | icon  |             |
+#                       |       |  profile    |
+#   
+#   Memory layout:      |       |  used: X.XG  |
+#                       | icon  |              |
+#                       |       |  total: X.XG |
+#   
+#   CPU/Workspace:      | icon  |  text       |  (single line text)
 #
 # Font Size:
 #   FontSize at the top sets the global default (20.0 in this config)
 #   Add FontSize = 16.0 to individual buttons to override
-#   Smaller fonts work well with vertical layout for compact displays
+#   Smaller fonts work well with stacked layout for compact displays
 #
 # Commands:
 #   Add Command = "your-shell-command" to execute a command when button is pressed
