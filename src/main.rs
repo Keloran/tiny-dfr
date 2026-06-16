@@ -27,6 +27,7 @@ use privdrop::PrivDrop;
 use std::{
     cmp::min,
     collections::HashMap,
+    env,
     fs::{self, File, OpenOptions},
     os::{
         fd::{AsFd, AsRawFd},
@@ -44,6 +45,7 @@ mod display;
 mod fonts;
 mod pixel_shift;
 mod sysinfo_manager;
+mod t2_usb;
 
 use crate::config::ConfigManager;
 use backlight::BacklightManager;
@@ -51,6 +53,7 @@ use config::{ButtonConfig, Config};
 use display::DrmBackend;
 use pixel_shift::{PixelShiftManager, PIXEL_SHIFT_WIDTH_PX};
 use sysinfo_manager::SystemInfoManager;
+use t2_usb::{is_t2_macbook, T2TouchBar};
 
 const BUTTON_SPACING_PX: i32 = 16;
 const BUTTON_COLOR_INACTIVE: f64 = 0.200;
@@ -60,6 +63,7 @@ const TIMEOUT_MS: i32 = 10 * 1000;
 const EXIT_DRM_UNAVAILABLE: i32 = 75;
 const DRM_OPEN_ATTEMPTS: u32 = 6;
 const DRM_OPEN_RETRY_DELAY: Duration = Duration::from_secs(2);
+const T2_USB_RECOVERY_ENV: &str = "TINY_DFR_T2_USB_RECOVERY";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BatteryState {
@@ -1429,7 +1433,7 @@ where
     );
 }
 
-fn open_drm_backend() -> Option<DrmBackend> {
+fn open_drm_backend(report_final_failure: bool) -> Option<DrmBackend> {
     let mut last_error = None;
 
     for attempt in 1..=DRM_OPEN_ATTEMPTS {
@@ -1450,18 +1454,47 @@ fn open_drm_backend() -> Option<DrmBackend> {
     if let Some(err) = last_error {
         eprintln!("Touch Bar DRM device unavailable after retries: {err}");
     }
-    eprintln!("Not restarting automatically; fix the DRM owner/seat and restart tiny-dfr.service");
+    if report_final_failure {
+        eprintln!(
+            "Not restarting automatically; fix the DRM owner/seat and restart tiny-dfr.service"
+        );
+    }
     None
 }
 
-fn main() {
-    if !DrmBackend::touchbar_card_present() {
-        eprintln!("Touch Bar DRM card is not present; not touching USB");
-        std::process::exit(EXIT_DRM_UNAVAILABLE);
+fn try_touchbar_usb_recovery() {
+    let recovery_enabled = env::var(T2_USB_RECOVERY_ENV)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    if !recovery_enabled {
+        eprintln!(
+            "Touch Bar DRM device unavailable; skipping T2 USB reset. Set {T2_USB_RECOVERY_ENV}=1 to enable recovery."
+        );
+        return;
     }
 
-    let Some(mut drm) = open_drm_backend() else {
-        std::process::exit(EXIT_DRM_UNAVAILABLE);
+    if !is_t2_macbook() {
+        eprintln!("Touch Bar DRM device unavailable and this does not look like a T2 MacBook");
+        return;
+    }
+
+    eprintln!("Touch Bar DRM device unavailable; trying T2 Touch Bar USB recovery");
+    let mut touchbar = T2TouchBar::new();
+    if let Err(err) = touchbar.initialize() {
+        eprintln!("T2 Touch Bar USB recovery failed: {err}");
+    }
+}
+
+fn main() {
+    let mut drm = match open_drm_backend(false) {
+        Some(drm) => drm,
+        None => {
+            try_touchbar_usb_recovery();
+            let Some(drm) = open_drm_backend(true) else {
+                std::process::exit(EXIT_DRM_UNAVAILABLE);
+            };
+            drm
+        }
     };
     let (height, width) = drm.mode().size();
     if panic::catch_unwind(AssertUnwindSafe(|| real_main(&mut drm))).is_ok() {

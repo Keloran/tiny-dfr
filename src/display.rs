@@ -176,43 +176,7 @@ fn try_open_card(path: &Path) -> Result<DrmBackend> {
     Ok(DrmBackend { card, mode, db, fb })
 }
 
-fn is_touchbar_card(path: &Path) -> Result<bool> {
-    let card = Card::open(path)?;
-    let res = card.resource_handles()?;
-    let coninfo = res
-        .connectors()
-        .iter()
-        .flat_map(|con| card.get_connector(*con, true))
-        .collect::<Vec<_>>();
-
-    Ok(coninfo
-        .iter()
-        .filter(|con| con.state() == connector::State::Connected)
-        .flat_map(|con| con.modes().first())
-        .any(|mode| {
-            let (disp_width, disp_height) = mode.size();
-            disp_height / disp_width >= 30
-        }))
-}
-
 impl DrmBackend {
-    pub fn touchbar_card_present() -> bool {
-        let Ok(entries) = fs::read_dir("/dev/dri/") else {
-            return false;
-        };
-
-        for entry in entries.flatten() {
-            if !entry.file_name().to_string_lossy().starts_with("card") {
-                continue;
-            }
-            if is_touchbar_card(&entry.path()).unwrap_or(false) {
-                return true;
-            }
-        }
-
-        false
-    }
-
     pub fn open_card() -> Result<DrmBackend> {
         let mut errors = Vec::new();
         for entry in fs::read_dir("/dev/dri/")? {
