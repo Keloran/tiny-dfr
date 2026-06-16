@@ -229,7 +229,24 @@ impl Button {
                 let formatted_time = current_time
                     .format_localized_with_items(format.iter(), *locale)
                     .to_string();
-                ButtonContent::SimpleText(formatted_time)
+                if self.stacked {
+                    // Split on runs of 2+ whitespace so each group (e.g. the
+                    // time and the date in the built-in "24hr"/"12hr" formats,
+                    // which separate them with spaces) lands on its own line.
+                    let lines: Vec<String> = formatted_time
+                        .split("  ")
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .collect();
+                    if lines.len() > 1 {
+                        ButtonContent::MultilineText(lines)
+                    } else {
+                        ButtonContent::SimpleText(formatted_time)
+                    }
+                } else {
+                    ButtonContent::SimpleText(formatted_time)
+                }
             }
             ButtonImage::Battery(battery, battery_mode, icons) => {
                 let (capacity, state) = get_battery_state(battery);
