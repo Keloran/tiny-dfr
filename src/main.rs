@@ -84,6 +84,36 @@ struct BatteryImages {
     bolt: Handle,
 }
 
+struct WeatherIcons {
+    icons: HashMap<&'static str, Handle>,
+}
+
+impl WeatherIcons {
+    fn load(theme: Option<&str>) -> WeatherIcons {
+        let mut icons = HashMap::new();
+        for name in [
+            "weather_sunny",
+            "weather_cloudy",
+            "weather_rainy",
+            "weather_snowy",
+            "weather_moon",
+        ] {
+            if let Ok(ButtonImage::Svg(handle)) =
+                try_load_image(name, theme, DEFAULT_ICON_SIZE, DEFAULT_ICON_SIZE)
+            {
+                icons.insert(name, handle);
+            }
+        }
+        WeatherIcons { icons }
+    }
+    fn pick(&self, name: &str) -> Option<Handle> {
+        self.icons
+            .get(name)
+            .or_else(|| self.icons.get("weather_cloudy"))
+            .cloned()
+    }
+}
+
 #[derive(Eq, PartialEq, Copy, Clone)]
 enum BatteryIconMode {
     Percentage,
@@ -116,7 +146,7 @@ enum ButtonImage {
         icon: Option<Handle>,
         muted_icon: Option<Handle>,
     },
-    WeatherCurrent,
+    WeatherCurrent(WeatherIcons),
     WeatherForecast(usize),
     Spacer,
 }
@@ -366,7 +396,7 @@ impl Button {
                 icon: icon.clone(),
                 muted_icon: muted_icon.clone(),
             },
-            ButtonImage::WeatherCurrent => {
+            ButtonImage::WeatherCurrent(icons) => {
                 if let Some(mgr) = weather_mgr {
                     let d = mgr.data();
                     if d.available {
@@ -374,23 +404,17 @@ impl Button {
                             .current_temp
                             .map(|t| format!("{:.0}{}", t, d.unit))
                             .unwrap_or_else(|| "--".to_string());
-                        if self.stacked {
-                            let mut lines = Vec::new();
-                            if !d.city.is_empty() {
-                                lines.push(d.city.clone());
+                        if let Some(icon) = icons.pick(&d.current_icon) {
+                            ButtonContent::IconWithText {
+                                icon,
+                                icon_size: DEFAULT_ICON_SIZE as f64,
+                                text: temp,
                             }
-                            if !d.current_desc.is_empty() {
-                                lines.push(d.current_desc.clone());
-                            }
-                            lines.push(temp);
-                            ButtonContent::MultilineText(lines)
-                        } else if d.current_desc.is_empty() {
-                            ButtonContent::SimpleText(temp)
                         } else {
-                            ButtonContent::SimpleText(format!("{} {}", d.current_desc, temp))
+                            ButtonContent::SimpleText(temp)
                         }
                     } else {
-                        ButtonContent::SimpleText("Weather…".to_string())
+                        ButtonContent::SimpleText("…".to_string())
                     }
                 } else {
                     ButtonContent::Empty
@@ -828,7 +852,7 @@ impl Button {
             }
         } else if let Some(weather) = cfg.weather {
             match weather.as_str() {
-                "current" => Button::new_weather_current(),
+                "current" => Button::new_weather_current(cfg.theme.as_deref()),
                 "forecast" => Button::new_weather_forecast(cfg.weather_day.unwrap_or(0)),
                 _ => {
                     eprintln!("Unknown Weather kind '{}'; expected current or forecast", weather);
@@ -926,12 +950,12 @@ impl Button {
             toggle_target: None,
         }
     }
-    fn new_weather_current() -> Button {
+    fn new_weather_current(theme: Option<&str>) -> Button {
         Button {
             action: vec![],
             active: false,
             changed: false,
-            image: ButtonImage::WeatherCurrent,
+            image: ButtonImage::WeatherCurrent(WeatherIcons::load(theme)),
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
@@ -1975,7 +1999,7 @@ fn real_main(drm: &mut DrmBackend) {
             for button in &mut layers[active_layer].buttons {
                 if matches!(
                     button.1.image,
-                    ButtonImage::WeatherCurrent | ButtonImage::WeatherForecast(_)
+                    ButtonImage::WeatherCurrent(_) | ButtonImage::WeatherForecast(_)
                 ) {
                     button.1.changed = true;
                 }

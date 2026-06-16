@@ -9,15 +9,27 @@ cairo, libinput, freetype, fontconfig, librsvg 2.59 or later, uinput enabled in 
 
 tiny-dfr needs access to the Touch Bar DRM/input devices, `/dev/uinput`, and
 backlight brightness files under `/sys/class/backlight`. The packaged udev rules
-in `etc/udev/rules.d` grant those devices to the `input` and `video` groups.
+in `etc/udev/rules.d` grant those devices to the `input` and `video` groups. The
+keyboard-backlight slider additionally needs write access to the keyboard LED,
+granted by `99-touchbar-leds.rules`.
 
 Install the packaged rules and service file:
 
 ```sh
 sudo install -Dm644 etc/udev/rules.d/99-touchbar-tiny-dfr.rules /etc/udev/rules.d/99-touchbar-tiny-dfr.rules
 sudo install -Dm644 etc/udev/rules.d/99-touchbar-seat.rules /etc/udev/rules.d/99-touchbar-seat.rules
+sudo install -Dm644 etc/udev/rules.d/99-touchbar-leds.rules /etc/udev/rules.d/99-touchbar-leds.rules
 sudo install -Dm644 etc/udev/rules.d/99-uinput.rules /etc/udev/rules.d/99-uinput.rules
 sudo install -Dm644 etc/systemd/system/tiny-dfr.service /etc/systemd/system/tiny-dfr.service
+```
+
+The weather buttons fetch from wttr.in, which needs network access. If your
+service file hardens `RestrictAddressFamilies` (the packaged one does), install
+the drop-in that re-enables `AF_INET`/`AF_INET6`. It merges with the main unit,
+so it is safe even with a customized service file:
+
+```sh
+sudo install -Dm644 etc/systemd/system/tiny-dfr.service.d/network.conf /etc/systemd/system/tiny-dfr.service.d/network.conf
 ```
 
 Add your user to the required groups, then log out and back in:
