@@ -3,7 +3,7 @@
 # The daemon will merge those two files, giving preference to the one in /etc
 
 # Default layer to show on startup
-# Options: "SystemInfo", "FKeys", "Media"
+# Options: "SystemInfo", "FKeys", "Media", or any name under [Layers]
 # "FKeys" shows F1-F12 by default (traditional behavior)
 DefaultLayer = "FKeys"
 
@@ -181,3 +181,22 @@ MediaLayerKeys = [
     # { Icon = "audio-volume-low",     Theme = "breeze-dark", Action = "VolumeDown"     },
     # { Icon = "audio-volume-high",    Theme = "breeze-dark", Action = "VolumeUp"       }
 ]
+
+# Extra named layers can be added with array-of-tables syntax. LayerToggle targets
+# the human-readable layer name, so this button switches to Weather:
+#
+# [[SystemInfoLayerKeys]]
+# Icon = "weather"
+# LayerToggle = "Weather"
+# Action = []
+#
+# [[Layers.Weather]]
+# Text = "Back"
+# LayerToggle = "SystemInfo"
+# Action = []
+# Stretch = 1
+#
+# [[Layers.Weather]]
+# Text = "Mon 18C"
+# Action = []
+# Stretch = 2
