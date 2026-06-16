@@ -1,0 +1,12 @@
+// Allow members of the wheel group to switch power profiles without an
+// active-session check. tiny-dfr spawns powerprofilesctl from its service
+// scope (user@.service), which polkit does not associate with the logind
+// login session, so the default allow_active rule in
+// power-profiles-daemon.policy never matches and the switch is denied.
+polkit.addRule(function(action, subject) {
+    if ((action.id == "org.freedesktop.UPower.PowerProfiles.switch-profile" ||
+         action.id == "org.freedesktop.UPower.PowerProfiles.hold-profile") &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});

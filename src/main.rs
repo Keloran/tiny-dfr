@@ -229,7 +229,24 @@ impl Button {
                 let formatted_time = current_time
                     .format_localized_with_items(format.iter(), *locale)
                     .to_string();
-                ButtonContent::SimpleText(formatted_time)
+                if self.stacked {
+                    // Split on runs of 2+ whitespace so each group (e.g. the
+                    // time and the date in the built-in "24hr"/"12hr" formats,
+                    // which separate them with spaces) lands on its own line.
+                    let lines: Vec<String> = formatted_time
+                        .split("  ")
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .collect();
+                    if lines.len() > 1 {
+                        ButtonContent::MultilineText(lines)
+                    } else {
+                        ButtonContent::SimpleText(formatted_time)
+                    }
+                } else {
+                    ButtonContent::SimpleText(formatted_time)
+                }
             }
             ButtonImage::Battery(battery, battery_mode, icons) => {
                 let (capacity, state) = get_battery_state(battery);
@@ -1444,6 +1461,19 @@ impl Button {
             _ => self.toggle_target.as_deref(),
         }
     }
+    // A button is interactive only if pressing it actually does something:
+    // emits keys, runs a command, switches layers, or is a draggable slider.
+    // Display-only buttons (time, weather, cpu/mem readouts, plain labels)
+    // have nothing to do on press, so we ignore touches on them rather than
+    // flashing a highlight that makes the button look broken.
+    fn is_interactive(&self) -> bool {
+        if matches!(self.image, ButtonImage::Slider { .. }) {
+            return true;
+        }
+        !self.action.is_empty()
+            || self.command.is_some()
+            || self.layer_toggle_target().is_some()
+    }
     fn is_visible(&self, sysinfo_mgr: Option<&SystemInfoManager>) -> bool {
         match self.image {
             ButtonImage::ActiveWindow | ButtonImage::ActiveWorkspace(_) => sysinfo_mgr
@@ -1706,6 +1736,12 @@ impl FunctionLayer {
             || y < 0.1 * height as f64
             || y > 0.9 * height as f64
         {
+            return None;
+        }
+
+        // Ignore presses on buttons that have no action to perform so they
+        // don't flash an active highlight and appear broken.
+        if !self.buttons[i].1.is_interactive() {
             return None;
         }
 
