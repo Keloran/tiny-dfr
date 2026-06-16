@@ -1,0 +1,5 @@
+# Grant the `video` group write access to the keyboard backlight brightness so
+# tiny-dfr (which runs as the user in the `video` group) can drive the keyboard
+# backlight slider. Mirrors the chgrp/chmod pattern used for display backlights.
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="*kbd_backlight*", RUN+="/bin/chgrp video /sys/class/leds/%k/brightness"
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="*kbd_backlight*", RUN+="/bin/chmod g+w /sys/class/leds/%k/brightness"

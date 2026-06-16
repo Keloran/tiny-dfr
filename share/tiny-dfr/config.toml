@@ -153,19 +153,33 @@ PrimaryLayerKeys = [
 ]
 
 # This key defines the contents of the media key layer
+#
+# Slider buttons replace an up/down key pair with a single draggable bar that
+# shows a live value indicator. Touch or drag anywhere along the slider to set
+# the level. Supported kinds:
+#   "display_brightness" - the main display backlight (sysfs)
+#   "keyboard_backlight" - the keyboard backlight LED (sysfs)
+#   "volume"             - the default audio sink, via `wpctl` (PipeWire).
+#                          Double-tap a volume slider to toggle mute.
+# Give sliders a larger Stretch so there is room for the bar.
 MediaLayerKeys = [
-    { Icon = "brightness_low",  Action = "BrightnessDown" },
-    { Icon = "brightness_high", Action = "BrightnessUp"   },
+    { Slider = "display_brightness", Stretch = 3 },
+    { Slider = "keyboard_backlight", Stretch = 3 },
     { Icon = "mic_off",         Action = "MicMute"        },
     { Icon = "search",          Action = "Search"         },
-    { Icon = "backlight_low",   Action = "IllumDown"      },
-    { Icon = "backlight_high",  Action = "IllumUp"        },
     { Icon = "fast_rewind",     Action = "PreviousSong"   },
     { Icon = "play_pause",      Action = "PlayPause"      },
     { Icon = "fast_forward",    Action = "NextSong"       },
-    { Icon = "volume_off",      Action = "Mute"           },
-    { Icon = "volume_down",     Action = "VolumeDown"     },
-    { Icon = "volume_up",       Action = "VolumeUp"       }
+    { Slider = "volume",             Stretch = 3 }
+
+    # The classic up/down buttons still work if you prefer them:
+    # { Icon = "brightness_low",  Action = "BrightnessDown" },
+    # { Icon = "brightness_high", Action = "BrightnessUp"   },
+    # { Icon = "backlight_low",   Action = "IllumDown"      },
+    # { Icon = "backlight_high",  Action = "IllumUp"        },
+    # { Icon = "volume_off",      Action = "Mute"           },
+    # { Icon = "volume_down",     Action = "VolumeDown"     },
+    # { Icon = "volume_up",       Action = "VolumeUp"       }
 
     # Example with XDG icons (requires `breeze-dark` theme installed):
     # { Icon = "brightness-low",       Theme = "breeze-dark", Action = "BrightnessDown" },
