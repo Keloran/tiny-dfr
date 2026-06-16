@@ -12,11 +12,12 @@ use serde::{
     de::{self, Visitor},
     Deserialize, Deserializer,
 };
-use std::{fmt, fs::read_to_string, os::fd::AsFd};
+use std::{collections::BTreeMap, fmt, fs::read_to_string, os::fd::AsFd};
 
 const USER_CFG_PATH: &str = "/etc/tiny-dfr/config.toml";
 
 pub struct Config {
+    pub default_layer: String,
     pub show_button_outlines: bool,
     pub enable_pixel_shift: bool,
     pub font_face: FontFace,
@@ -44,6 +45,7 @@ struct ConfigProxy {
     primary_layer_keys: Option<Vec<ButtonConfig>>,
     system_info_layer_keys: Option<Vec<ButtonConfig>>,
     media_layer_keys: Option<Vec<ButtonConfig>>,
+    layers: Option<BTreeMap<String, Vec<ButtonConfig>>>,
 }
 
 fn array_or_single<'de, D>(deserializer: D) -> Result<Vec<Key>, D::Error>
@@ -136,6 +138,9 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
         base.system_info_layer_keys = user.system_info_layer_keys.or(base.system_info_layer_keys);
         base.primary_layer_keys = user.primary_layer_keys.or(base.primary_layer_keys);
         base.media_layer_keys = user.media_layer_keys.or(base.media_layer_keys);
+        if let Some(user_layers) = user.layers {
+            base.layers.get_or_insert_with(BTreeMap::new).extend(user_layers);
+        }
         base.active_brightness = user.active_brightness.or(base.active_brightness);
         base.double_press_switch_layers = user.double_press_switch_layers.or(base.double_press_switch_layers);
         base.auto_add_esc_key = user.auto_add_esc_key.or(base.auto_add_esc_key);
@@ -182,22 +187,36 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
             );
         }
     }
-    let system_info_layer = FunctionLayer::with_config(system_info_layer_keys);
-    let fkey_layer = FunctionLayer::with_config(primary_layer_keys);
-    let media_layer = FunctionLayer::with_config(media_layer_keys);
-    
-    // Determine layer order based on default layer setting
-    let default_layer = base.default_layer.as_deref().unwrap_or("SystemInfo");
-    let layers = match default_layer {
-        "SystemInfo" => vec![system_info_layer, fkey_layer, media_layer],
-        "FKeys" => vec![fkey_layer, system_info_layer, media_layer],
-        "Media" => vec![media_layer, fkey_layer, system_info_layer],
-        _ => {
-            eprintln!("Warning: Invalid DefaultLayer '{}', using SystemInfo", default_layer);
-            vec![system_info_layer, fkey_layer, media_layer]
+    let mut layers = vec![
+        FunctionLayer::with_config("SystemInfo", system_info_layer_keys),
+        FunctionLayer::with_config("FKeys", primary_layer_keys),
+        FunctionLayer::with_config("Media", media_layer_keys),
+    ];
+    if let Some(extra_layers) = base.layers {
+        for (name, keys) in extra_layers {
+            if matches!(name.as_str(), "SystemInfo" | "FKeys" | "Media") {
+                let key_name = match name.as_str() {
+                    "SystemInfo" => "SystemInfoLayerKeys",
+                    "FKeys" => "PrimaryLayerKeys",
+                    "Media" => "MediaLayerKeys",
+                    _ => unreachable!(),
+                };
+                eprintln!("Warning: Layers.{} ignored; use {} for built-in layers", name, key_name);
+                continue;
+            }
+            layers.push(FunctionLayer::with_config(name, keys));
         }
-    };
+    }
+    let default_layer = base.default_layer.as_deref().unwrap_or("SystemInfo");
+    if !layers.iter().any(|layer| layer.name == default_layer) {
+        eprintln!("Warning: Invalid DefaultLayer '{}', using SystemInfo", default_layer);
+    }
     let cfg = Config {
+        default_layer: if layers.iter().any(|layer| layer.name == default_layer) {
+            default_layer.to_string()
+        } else {
+            "SystemInfo".to_string()
+        },
         show_button_outlines: base.show_button_outlines.unwrap(),
         enable_pixel_shift: base.enable_pixel_shift.unwrap(),
         adaptive_brightness: base.adaptive_brightness.unwrap(),

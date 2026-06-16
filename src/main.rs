@@ -100,13 +100,17 @@ enum ButtonImage {
     Bitmap(ImageSurface),
     Time(Vec<ChronoItem<'static>>, Locale),
     Battery(String, BatteryIconMode, BatteryImages),
-    LayerToggle(String),
-    LayerToggleIcon(Handle),
+    LayerToggle(String, String),
+    LayerToggleIcon(String, Handle),
     CpuUsage(Option<Handle>),
     MemoryUsage(Option<Handle>),
     ActiveWindow,
     ActiveWorkspace(Option<Handle>),
     Spacer,
+}
+
+fn layer_index(layers: &[FunctionLayer], name: &str) -> Option<usize> {
+    layers.iter().position(|layer| layer.name == name)
 }
 
 struct Button {
@@ -152,10 +156,10 @@ impl Button {
     // Get the content to render based on button type
     fn get_content(&self, sysinfo_mgr: Option<&SystemInfoManager>) -> ButtonContent {
         match &self.image {
-            ButtonImage::Text(text) | ButtonImage::LayerToggle(text) => {
+            ButtonImage::Text(text) | ButtonImage::LayerToggle(_, text) => {
                 ButtonContent::SimpleText(text.clone())
             }
-            ButtonImage::Svg(svg) | ButtonImage::LayerToggleIcon(svg) => {
+            ButtonImage::Svg(svg) | ButtonImage::LayerToggleIcon(_, svg) => {
                 ButtonContent::Icon(svg.clone(), self.icon_width.min(self.icon_height))
             }
             ButtonImage::Bitmap(surf) => {
@@ -633,17 +637,21 @@ impl Button {
         let font_size = cfg.font_size;
         let max_title_length = cfg.max_title_length;
         
-        let mut button = if let Some(text) = cfg.text {
+        let mut button = if let Some(target) = cfg.layer_toggle {
+            if let Some(icon) = cfg.icon {
+                Button::new_layer_toggle_icon(
+                    target,
+                    icon,
+                    cfg.theme,
+                    cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
+                    cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
+                )
+            } else {
+                let label = cfg.text.unwrap_or_else(|| target.clone());
+                Button::new_layer_toggle(target, label)
+            }
+        } else if let Some(text) = cfg.text {
             Button::new_text(text, cfg.action)
-        } else if let (Some(icon), Some(_)) = (&cfg.icon, &cfg.layer_toggle) {
-            Button::new_layer_toggle_icon(
-                icon,
-                cfg.theme,
-                cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
-                cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
-            )
-        } else if let Some(label) = cfg.layer_toggle {
-            Button::new_layer_toggle(label)
         } else if let Some(time) = cfg.time {
             Button::new_time(cfg.action, cfg.command, &time, cfg.locale.as_deref())
         } else if let Some(battery_mode) = cfg.battery {
@@ -726,12 +734,12 @@ impl Button {
             max_title_length: None,
         }
     }
-    fn new_layer_toggle(label: String) -> Button {
+    fn new_layer_toggle(target: String, label: String) -> Button {
         Button {
             action: vec![],
             active: false,
             changed: false,
-            image: ButtonImage::LayerToggle(label),
+            image: ButtonImage::LayerToggle(target, label),
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
@@ -741,6 +749,7 @@ impl Button {
         }
     }
     fn new_layer_toggle_icon(
+        target: String,
         path: impl AsRef<str>,
         theme: Option<impl AsRef<str>>,
         icon_width: i32,
@@ -751,7 +760,7 @@ impl Button {
         Button {
             action: vec![],
             image: match image {
-                ButtonImage::Svg(handle) => ButtonImage::LayerToggleIcon(handle),
+                ButtonImage::Svg(handle) => ButtonImage::LayerToggleIcon(target, handle),
                 ButtonImage::Bitmap(_) => {
                     panic!("Layer toggle icons must be SVG, not bitmap")
                 }
@@ -1048,7 +1057,7 @@ impl Button {
 
             if !matches!(
                 self.image,
-                ButtonImage::LayerToggle(_) | ButtonImage::LayerToggleIcon(_)
+                ButtonImage::LayerToggle(_, _) | ButtonImage::LayerToggleIcon(_, _)
             ) {
                 toggle_keys(uinput, &self.action, active as i32);
                 
@@ -1114,11 +1123,12 @@ impl Button {
             }
         }
     }
-    fn is_layer_toggle(&self) -> bool {
-        matches!(
-            self.image,
-            ButtonImage::LayerToggle(_) | ButtonImage::LayerToggleIcon(_)
-        )
+    fn layer_toggle_target(&self) -> Option<&str> {
+        match &self.image {
+            ButtonImage::LayerToggle(target, _) => Some(target),
+            ButtonImage::LayerToggleIcon(target, _) => Some(target),
+            _ => None,
+        }
     }
     fn is_visible(&self, sysinfo_mgr: Option<&SystemInfoManager>) -> bool {
         match self.image {
@@ -1145,6 +1155,7 @@ impl Button {
 
 #[derive(Default)]
 pub struct FunctionLayer {
+    name: String,
     displays_time: bool,
     displays_battery: bool,
     displays_sysinfo: bool,
@@ -1154,7 +1165,7 @@ pub struct FunctionLayer {
 }
 
 impl FunctionLayer {
-    fn with_config(cfg: Vec<ButtonConfig>) -> FunctionLayer {
+    fn with_config(name: impl Into<String>, cfg: Vec<ButtonConfig>) -> FunctionLayer {
         if cfg.is_empty() {
             panic!("Invalid configuration, layer has 0 buttons");
         }
@@ -1180,6 +1191,7 @@ impl FunctionLayer {
             .collect::<Vec<_>>();
         let faster_refresh = buttons.iter().any(|(_, b)| b.needs_faster_refresh());
         FunctionLayer {
+            name: name.into(),
             displays_time,
             displays_battery,
             displays_sysinfo,
@@ -1554,8 +1566,8 @@ fn real_main(drm: &mut DrmBackend) {
 
     let mut surface =
         ImageSurface::create(Format::ARgb32, db_width as i32, db_height as i32).unwrap();
-    let mut active_layer = 0;
-    let mut normal_layer = 0;
+    let mut normal_layer = layer_index(&layers, &cfg.default_layer).unwrap_or(0);
+    let mut active_layer = normal_layer;
     let mut needs_complete_redraw = true;
 
     let mut input_tb = Libinput::new_with_udev(Interface);
@@ -1613,8 +1625,8 @@ fn real_main(drm: &mut DrmBackend) {
     };
     loop {
         if cfg_mgr.update_config(&mut cfg, &mut layers, width) {
-            active_layer = 0;
-            normal_layer = 0;
+            normal_layer = layer_index(&layers, &cfg.default_layer).unwrap_or(0);
+            active_layer = normal_layer;
             needs_complete_redraw = true;
         }
 
@@ -1717,7 +1729,7 @@ fn real_main(drm: &mut DrmBackend) {
                             last = Instant::now();
                         }
                         let new_layer = match key.key_state() {
-                            KeyState::Pressed => 1,
+                            KeyState::Pressed => layer_index(&layers, "FKeys").unwrap_or(normal_layer),
                             KeyState::Released => normal_layer,
                         };
                         if active_layer != new_layer {
@@ -1759,13 +1771,20 @@ fn real_main(drm: &mut DrmBackend) {
                                 continue;
                             }
                             let (layer, btn) = *touches.get(&up.seat_slot()).unwrap();
-                            let is_layer_toggle = layers[layer].buttons[btn].1.is_layer_toggle();
+                            let layer_toggle_target = layers[layer].buttons[btn]
+                                .1
+                                .layer_toggle_target()
+                                .map(str::to_string);
                             layers[layer].buttons[btn].1.set_active(&mut uinput, false);
                             touches.remove(&up.seat_slot());
-                            if is_layer_toggle && layers.len() > 2 {
-                                normal_layer = if normal_layer == 2 { 0 } else { 2 };
-                                active_layer = normal_layer;
-                                needs_complete_redraw = true;
+                            if let Some(target) = layer_toggle_target {
+                                if let Some(target_layer) = layer_index(&layers, &target) {
+                                    normal_layer = target_layer;
+                                    active_layer = normal_layer;
+                                    needs_complete_redraw = true;
+                                } else {
+                                    eprintln!("LayerToggle target '{}' does not exist", target);
+                                }
                             }
                         }
                         _ => {}

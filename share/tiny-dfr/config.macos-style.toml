@@ -41,7 +41,7 @@ DropPrivileges = false
 # This shows system information like macOS Touch Bar
 SystemInfoLayerKeys = [
     # Switch to media controls
-    { Icon = "settings", LayerToggle = "settings", Action = [], Stretch = 1 },
+    { Icon = "settings", LayerToggle = "Media", Action = [], Stretch = 1 },
 
     # CPU usage display
     # Optional: Add Command to execute when pressed. Examples:
@@ -100,7 +100,7 @@ PrimaryLayerKeys = [
 # MediaLayerKeys = Media controls layer (shown after pressing settings icon)
 # Press < to return to the system info screen
 MediaLayerKeys = [
-    { LayerToggle = "<", Action = [], Stretch = 1 },
+    { Text = "<", LayerToggle = "SystemInfo", Action = [], Stretch = 1 },
 
     # Brightness controls
     { Icon = "brightness_low",  Action = "BrightnessDown" },
