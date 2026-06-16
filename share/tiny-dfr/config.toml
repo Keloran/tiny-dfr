@@ -3,7 +3,7 @@
 # The daemon will merge those two files, giving preference to the one in /etc
 
 # Default layer to show on startup
-# Options: "SystemInfo", "FKeys", "Media"
+# Options: "SystemInfo", "FKeys", "Media", or any name under [Layers]
 # "FKeys" shows F1-F12 by default (traditional behavior)
 DefaultLayer = "FKeys"
 
@@ -153,19 +153,33 @@ PrimaryLayerKeys = [
 ]
 
 # This key defines the contents of the media key layer
+#
+# Slider buttons replace an up/down key pair with a single draggable bar that
+# shows a live value indicator. Touch or drag anywhere along the slider to set
+# the level. Supported kinds:
+#   "display_brightness" - the main display backlight (sysfs)
+#   "keyboard_backlight" - the keyboard backlight LED (sysfs)
+#   "volume"             - the default audio sink, via `wpctl` (PipeWire).
+#                          Double-tap a volume slider to toggle mute.
+# Give sliders a larger Stretch so there is room for the bar.
 MediaLayerKeys = [
-    { Icon = "brightness_low",  Action = "BrightnessDown" },
-    { Icon = "brightness_high", Action = "BrightnessUp"   },
+    { Slider = "display_brightness", Stretch = 3 },
+    { Slider = "keyboard_backlight", Stretch = 3 },
     { Icon = "mic_off",         Action = "MicMute"        },
     { Icon = "search",          Action = "Search"         },
-    { Icon = "backlight_low",   Action = "IllumDown"      },
-    { Icon = "backlight_high",  Action = "IllumUp"        },
     { Icon = "fast_rewind",     Action = "PreviousSong"   },
     { Icon = "play_pause",      Action = "PlayPause"      },
     { Icon = "fast_forward",    Action = "NextSong"       },
-    { Icon = "volume_off",      Action = "Mute"           },
-    { Icon = "volume_down",     Action = "VolumeDown"     },
-    { Icon = "volume_up",       Action = "VolumeUp"       }
+    { Slider = "volume",             Stretch = 3 }
+
+    # The classic up/down buttons still work if you prefer them:
+    # { Icon = "brightness_low",  Action = "BrightnessDown" },
+    # { Icon = "brightness_high", Action = "BrightnessUp"   },
+    # { Icon = "backlight_low",   Action = "IllumDown"      },
+    # { Icon = "backlight_high",  Action = "IllumUp"        },
+    # { Icon = "volume_off",      Action = "Mute"           },
+    # { Icon = "volume_down",     Action = "VolumeDown"     },
+    # { Icon = "volume_up",       Action = "VolumeUp"       }
 
     # Example with XDG icons (requires `breeze-dark` theme installed):
     # { Icon = "brightness-low",       Theme = "breeze-dark", Action = "BrightnessDown" },
@@ -181,3 +195,47 @@ MediaLayerKeys = [
     # { Icon = "audio-volume-low",     Theme = "breeze-dark", Action = "VolumeDown"     },
     # { Icon = "audio-volume-high",    Theme = "breeze-dark", Action = "VolumeUp"       }
 ]
+
+# Weather buttons fetch from wttr.in (the same source the omarchy/waybar weather
+# module uses), which auto-detects your location by IP and provides a 3-day
+# forecast. Optional settings:
+#   WeatherLocation = "London"   # city or "lat,lon"; omit to auto-detect by IP
+#   WeatherUnits = "celsius"     # or "fahrenheit"
+#
+# A "current" weather button shows the condition + temperature and can also act
+# as a LayerToggle (any button may combine content with a LayerToggle). The
+# "forecast" buttons each show one day (WeatherDay 0 = today) and have no action.
+#
+# [[SystemInfoLayerKeys]]
+# Weather = "current"
+# LayerToggle = "Weather"
+# Action = []
+# Stretch = 2
+# Stacked = true
+#
+# [[Layers.Weather]]
+# Text = "<-"
+# LayerToggle = "SystemInfo"
+# Action = []
+# Stretch = 1
+#
+# [[Layers.Weather]]
+# Weather = "forecast"
+# WeatherDay = 0
+# Action = []
+# Stretch = 2
+# Stacked = true
+#
+# [[Layers.Weather]]
+# Weather = "forecast"
+# WeatherDay = 1
+# Action = []
+# Stretch = 2
+# Stacked = true
+#
+# [[Layers.Weather]]
+# Weather = "forecast"
+# WeatherDay = 2
+# Action = []
+# Stretch = 2
+# Stacked = true

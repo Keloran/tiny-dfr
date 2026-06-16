@@ -1,7 +1,8 @@
 #!/bin/sh
 
-# T2 Touch Bar displays often need a USB reset after resume. tiny-dfr performs
-# that reset during startup, so restart the daemon around system sleep.
+# Stop tiny-dfr during suspend so it releases the Touch Bar DRM device. Do not
+# force USB recovery here; resetting the T2 Touch Bar device can stall/repeat the
+# internal keyboard/trackpad on some machines.
 
 case "$1" in
     pre)
@@ -10,6 +11,6 @@ case "$1" in
     post)
         # Give apple-bce/appletbdrm a moment to re-enumerate after resume.
         sleep 2
-        systemctl restart tiny-dfr.service
+        systemctl start tiny-dfr.service
         ;;
 esac

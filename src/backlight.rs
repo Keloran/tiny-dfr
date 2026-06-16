@@ -43,7 +43,7 @@ fn find_backlight() -> Result<PathBuf> {
     Err(anyhow!("No Touch Bar backlight device found"))
 }
 
-fn find_display_backlight() -> Result<PathBuf> {
+pub(crate) fn find_display_backlight() -> Result<PathBuf> {
     for entry in fs::read_dir("/sys/class/backlight/")? {
         let entry = entry?;
         if [
@@ -59,6 +59,20 @@ fn find_display_backlight() -> Result<PathBuf> {
         }
     }
     Err(anyhow!("No Built-in Retina Display backlight device found"))
+}
+
+pub(crate) fn find_keyboard_backlight() -> Result<PathBuf> {
+    for entry in fs::read_dir("/sys/class/leds/")? {
+        let entry = entry?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .contains("kbd_backlight")
+        {
+            return Ok(entry.path());
+        }
+    }
+    Err(anyhow!("No keyboard backlight device found"))
 }
 
 fn set_backlight(mut file: &File, value: u32) {

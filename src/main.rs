@@ -27,6 +27,7 @@ use privdrop::PrivDrop;
 use std::{
     cmp::min,
     collections::HashMap,
+    env,
     fs::{self, File, OpenOptions},
     os::{
         fd::{AsFd, AsRawFd},
@@ -43,23 +44,32 @@ mod config;
 mod display;
 mod fonts;
 mod pixel_shift;
+mod slider;
 mod sysinfo_manager;
+mod t2_usb;
+mod weather;
 
 use crate::config::ConfigManager;
 use backlight::BacklightManager;
 use config::{ButtonConfig, Config};
 use display::DrmBackend;
 use pixel_shift::{PixelShiftManager, PIXEL_SHIFT_WIDTH_PX};
+use slider::{Slider, SliderKind};
 use sysinfo_manager::SystemInfoManager;
+use t2_usb::{is_t2_macbook, T2TouchBar};
+use weather::WeatherManager;
 
 const BUTTON_SPACING_PX: i32 = 16;
 const BUTTON_COLOR_INACTIVE: f64 = 0.200;
 const BUTTON_COLOR_ACTIVE: f64 = 0.400;
 const DEFAULT_ICON_SIZE: i32 = 48;
 const TIMEOUT_MS: i32 = 10 * 1000;
+const SLIDER_REFRESH_MS: i32 = 1000;
+const DOUBLE_TAP_TIMEOUT: Duration = Duration::from_millis(300);
 const EXIT_DRM_UNAVAILABLE: i32 = 75;
 const DRM_OPEN_ATTEMPTS: u32 = 6;
 const DRM_OPEN_RETRY_DELAY: Duration = Duration::from_secs(2);
+const T2_USB_RECOVERY_ENV: &str = "TINY_DFR_T2_USB_RECOVERY";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BatteryState {
@@ -72,6 +82,36 @@ struct BatteryImages {
     plain: Vec<Handle>,
     charging: Vec<Handle>,
     bolt: Handle,
+}
+
+struct WeatherIcons {
+    icons: HashMap<&'static str, Handle>,
+}
+
+impl WeatherIcons {
+    fn load(theme: Option<&str>) -> WeatherIcons {
+        let mut icons = HashMap::new();
+        for name in [
+            "weather_sunny",
+            "weather_cloudy",
+            "weather_rainy",
+            "weather_snowy",
+            "weather_moon",
+        ] {
+            if let Ok(ButtonImage::Svg(handle)) =
+                try_load_image(name, theme, DEFAULT_ICON_SIZE, DEFAULT_ICON_SIZE)
+            {
+                icons.insert(name, handle);
+            }
+        }
+        WeatherIcons { icons }
+    }
+    fn pick(&self, name: &str) -> Option<Handle> {
+        self.icons
+            .get(name)
+            .or_else(|| self.icons.get("weather_cloudy"))
+            .cloned()
+    }
 }
 
 #[derive(Eq, PartialEq, Copy, Clone)]
@@ -96,13 +136,23 @@ enum ButtonImage {
     Bitmap(ImageSurface),
     Time(Vec<ChronoItem<'static>>, Locale),
     Battery(String, BatteryIconMode, BatteryImages),
-    LayerToggle(String),
-    LayerToggleIcon(Handle),
+    LayerToggle(String, String),
     CpuUsage(Option<Handle>),
     MemoryUsage(Option<Handle>),
     ActiveWindow,
     ActiveWorkspace(Option<Handle>),
+    Slider {
+        state: Slider,
+        icon: Option<Handle>,
+        muted_icon: Option<Handle>,
+    },
+    WeatherCurrent(WeatherIcons),
+    WeatherForecast(usize, WeatherIcons),
     Spacer,
+}
+
+fn layer_index(layers: &[FunctionLayer], name: &str) -> Option<usize> {
+    layers.iter().position(|layer| layer.name == name)
 }
 
 struct Button {
@@ -116,6 +166,7 @@ struct Button {
     stacked: bool,
     font_size: Option<f64>,
     max_title_length: Option<usize>,
+    toggle_target: Option<String>,
 }
 
 // Unified rendering structures
@@ -132,26 +183,42 @@ enum ButtonContent {
         icon_size: f64,
         text: String,
     },
-    // Icon + multiple lines of text (always stacked)
+    // Icon + multiple lines of text (always stacked).
+    // emphasize_first renders the first line 2pt larger (used for the weekday).
     IconWithMultilineText {
         icon: Handle,
         icon_size: f64,
         lines: Vec<String>,
+        emphasize_first: bool,
     },
     // Clipped text (for window titles that might overflow)
     ClippedText(String),
+    // Multiple centered lines of text (no icon)
+    MultilineText(Vec<String>),
+    // Slider with a live value indicator (brightness / backlight / volume)
+    SliderBar {
+        fraction: f64,
+        muted: bool,
+        percent: u32,
+        icon: Option<Handle>,
+        muted_icon: Option<Handle>,
+    },
     // Nothing (spacer)
     Empty,
 }
 
 impl Button {
     // Get the content to render based on button type
-    fn get_content(&self, sysinfo_mgr: Option<&SystemInfoManager>) -> ButtonContent {
+    fn get_content(
+        &self,
+        sysinfo_mgr: Option<&SystemInfoManager>,
+        weather_mgr: Option<&WeatherManager>,
+    ) -> ButtonContent {
         match &self.image {
-            ButtonImage::Text(text) | ButtonImage::LayerToggle(text) => {
+            ButtonImage::Text(text) | ButtonImage::LayerToggle(_, text) => {
                 ButtonContent::SimpleText(text.clone())
             }
-            ButtonImage::Svg(svg) | ButtonImage::LayerToggleIcon(svg) => {
+            ButtonImage::Svg(svg) => {
                 ButtonContent::Icon(svg.clone(), self.icon_width.min(self.icon_height))
             }
             ButtonImage::Bitmap(surf) => {
@@ -208,6 +275,7 @@ impl Button {
                             icon: icon_handle.clone(),
                             icon_size: DEFAULT_ICON_SIZE as f64,
                             lines,
+                            emphasize_first: false,
                         }
                     } else {
                         ButtonContent::SimpleText(lines.join(" "))
@@ -266,6 +334,7 @@ impl Button {
                                 icon: svg.clone(),
                                 icon_size: self.icon_width.min(self.icon_height),
                                 lines,
+                                emphasize_first: false,
                             }
                         } else {
                             let mem_text = format!(
@@ -315,6 +384,76 @@ impl Button {
                         }
                     } else {
                         ButtonContent::SimpleText(format!("WS: {}", workspace))
+                    }
+                } else {
+                    ButtonContent::Empty
+                }
+            }
+            ButtonImage::Slider {
+                state,
+                icon,
+                muted_icon,
+            } => ButtonContent::SliderBar {
+                fraction: state.value(),
+                muted: state.muted(),
+                percent: state.percent(),
+                icon: icon.clone(),
+                muted_icon: muted_icon.clone(),
+            },
+            ButtonImage::WeatherCurrent(icons) => {
+                if let Some(mgr) = weather_mgr {
+                    let d = mgr.data();
+                    if d.available {
+                        let temp = d
+                            .current_temp
+                            .map(|t| format!("{:.0}{}", t, d.unit))
+                            .unwrap_or_else(|| "--".to_string());
+                        if let Some(icon) = icons.pick(&d.current_icon) {
+                            ButtonContent::IconWithText {
+                                icon,
+                                icon_size: DEFAULT_ICON_SIZE as f64,
+                                text: temp,
+                            }
+                        } else {
+                            ButtonContent::SimpleText(temp)
+                        }
+                    } else {
+                        ButtonContent::SimpleText("…".to_string())
+                    }
+                } else {
+                    ButtonContent::Empty
+                }
+            }
+            ButtonImage::WeatherForecast(day, icons) => {
+                if let Some(mgr) = weather_mgr {
+                    let d = mgr.data();
+                    if let Some(forecast) = d.days.get(*day) {
+                        let temps = format!(
+                            "{}/{}{}",
+                            forecast.tmax.round() as i64,
+                            forecast.tmin.round() as i64,
+                            d.unit
+                        );
+                        let mut lines = Vec::new();
+                        if !forecast.weekday.is_empty() {
+                            lines.push(forecast.weekday.clone());
+                        }
+                        lines.push(temps);
+                        if !forecast.desc.is_empty() {
+                            lines.push(forecast.desc.clone());
+                        }
+                        if let Some(icon) = icons.pick(&forecast.icon) {
+                            ButtonContent::IconWithMultilineText {
+                                icon,
+                                icon_size: DEFAULT_ICON_SIZE as f64,
+                                lines,
+                                emphasize_first: true,
+                            }
+                        } else {
+                            ButtonContent::MultilineText(lines)
+                        }
+                    } else {
+                        ButtonContent::SimpleText("--".to_string())
                     }
                 } else {
                     ButtonContent::Empty
@@ -392,9 +531,20 @@ impl Button {
                     c.show_text(&text).unwrap();
                 }
             }
-            ButtonContent::IconWithMultilineText { icon, icon_size, lines } => {
+            ButtonContent::IconWithMultilineText { icon, icon_size, lines, emphasize_first } => {
                 let spacing = 4.0;
                 let text_spacing = 2.0;
+                // The current font size (from global or per-button config) is already
+                // set on the context; optionally render the first line (the weekday)
+                // 2pt larger so it's easier to read.
+                let base_font_size = c.font_matrix().xx();
+                let line_size = |i: usize| {
+                    if emphasize_first && i == 0 {
+                        base_font_size + 2.0
+                    } else {
+                        base_font_size
+                    }
+                };
 
                 // Measure all lines
                 let mut line_extents = Vec::new();
@@ -402,6 +552,7 @@ impl Button {
                 let mut total_height: f64 = 0.0;
 
                 for (i, line) in lines.iter().enumerate() {
+                    c.set_font_size(line_size(i));
                     let extents = c.text_extents(line).unwrap();
                     max_width = max_width.max(extents.width());
                     total_height += extents.height();
@@ -425,12 +576,14 @@ impl Button {
 
                 let mut current_y = text_start_y;
                 for (i, (line, extents)) in lines.iter().zip(line_extents.iter()).enumerate() {
+                    c.set_font_size(line_size(i));
                     c.move_to(text_x, current_y + extents.height());
                     c.show_text(line).unwrap();
                     if i < lines.len() - 1 {
                         current_y += extents.height() + text_spacing;
                     }
                 }
+                c.set_font_size(base_font_size);
             }
             ButtonContent::ClippedText(text) => {
                 let extents = c.text_extents(&text).unwrap();
@@ -448,6 +601,87 @@ impl Button {
 
                 // Restore context
                 c.restore().unwrap();
+            }
+            ButtonContent::MultilineText(lines) => {
+                let text_spacing = 2.0;
+                let mut line_extents = Vec::new();
+                let mut total_height = 0.0;
+                for (i, line) in lines.iter().enumerate() {
+                    let extents = c.text_extents(line).unwrap();
+                    total_height += extents.height();
+                    if i < lines.len() - 1 {
+                        total_height += text_spacing;
+                    }
+                    line_extents.push(extents);
+                }
+
+                let mut current_y =
+                    y_shift + (height as f64 / 2.0 - total_height / 2.0).round();
+                for (line, extents) in lines.iter().zip(line_extents.iter()) {
+                    let x = button_left_edge
+                        + (button_width as f64 / 2.0 - extents.width() / 2.0).round();
+                    c.move_to(x, current_y + extents.height());
+                    c.show_text(line).unwrap();
+                    current_y += extents.height() + text_spacing;
+                }
+            }
+            ButtonContent::SliderBar {
+                fraction,
+                muted,
+                percent,
+                icon,
+                muted_icon,
+            } => {
+                let pad = 14.0;
+                let icon_size = 26.0;
+                let cy = y_shift + height as f64 / 2.0;
+
+                // Left icon: kind indicator, swapped for a muted glyph when muted.
+                let left_icon = if muted {
+                    muted_icon.as_ref().or(icon.as_ref())
+                } else {
+                    icon.as_ref()
+                };
+                let mut track_left = button_left_edge + pad;
+                if let Some(svg) = left_icon {
+                    let iy = cy - icon_size / 2.0;
+                    svg.render_document(c, &Rectangle::new(track_left, iy, icon_size, icon_size))
+                        .unwrap();
+                    track_left += icon_size + 10.0;
+                }
+
+                // Percentage readout, right-aligned.
+                let pct_text = format!("{}%", percent);
+                let extents = c.text_extents(&pct_text).unwrap();
+                let text_x = button_left_edge + button_width as f64 - pad - extents.width();
+                let track_right = (text_x - 12.0).max(track_left + 10.0);
+                let track_w = (track_right - track_left).max(10.0);
+
+                let track_h = 6.0;
+                let ty = cy - track_h / 2.0;
+
+                // Track background.
+                c.set_source_rgb(0.3, 0.3, 0.3);
+                c.rectangle(track_left, ty, track_w, track_h);
+                c.fill().unwrap();
+
+                // Filled portion (dimmed when muted).
+                let fill_level = if muted { 0.5 } else { 1.0 };
+                let fill_w = (track_w * fraction).max(0.0);
+                c.set_source_rgb(fill_level, fill_level, fill_level);
+                c.rectangle(track_left, ty, fill_w, track_h);
+                c.fill().unwrap();
+
+                // Thumb indicator.
+                let thumb_x = track_left + track_w * fraction;
+                c.set_source_rgb(1.0, 1.0, 1.0);
+                c.arc(thumb_x, cy, 8.0, 0.0, std::f64::consts::PI * 2.0);
+                c.fill().unwrap();
+
+                // Percentage text.
+                c.set_source_rgb(1.0, 1.0, 1.0);
+                c.move_to(text_x, cy + extents.height() / 2.0);
+                c.show_text(&pct_text).unwrap();
             }
             ButtonContent::Empty => {}
         }
@@ -628,18 +862,36 @@ impl Button {
         let stacked = cfg.stacked;
         let font_size = cfg.font_size;
         let max_title_length = cfg.max_title_length;
-        
-        let mut button = if let Some(text) = cfg.text {
+        // A LayerToggle can be combined with any button content (e.g. a CPU
+        // button that also switches layers). Capture it here and apply it to
+        // whatever button we build below; a bare LayerToggle with no content
+        // falls through to the dedicated toggle button at the end.
+        let toggle_target = cfg.layer_toggle.clone();
+
+        let mut button = if let Some(slider) = cfg.slider {
+            match SliderKind::parse(&slider) {
+                Some(kind) => Button::new_slider(kind, cfg.theme.as_deref()),
+                None => {
+                    eprintln!(
+                        "Unknown Slider kind '{}'; expected display_brightness, keyboard_backlight, or volume",
+                        slider
+                    );
+                    Button::new_spacer()
+                }
+            }
+        } else if let Some(weather) = cfg.weather {
+            match weather.as_str() {
+                "current" => Button::new_weather_current(cfg.theme.as_deref()),
+                "forecast" => {
+                    Button::new_weather_forecast(cfg.weather_day.unwrap_or(0), cfg.theme.as_deref())
+                }
+                _ => {
+                    eprintln!("Unknown Weather kind '{}'; expected current or forecast", weather);
+                    Button::new_spacer()
+                }
+            }
+        } else if let Some(text) = cfg.text {
             Button::new_text(text, cfg.action)
-        } else if let (Some(icon), Some(_)) = (&cfg.icon, &cfg.layer_toggle) {
-            Button::new_layer_toggle_icon(
-                icon,
-                cfg.theme,
-                cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
-                cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
-            )
-        } else if let Some(label) = cfg.layer_toggle {
-            Button::new_layer_toggle(label)
         } else if let Some(time) = cfg.time {
             Button::new_time(cfg.action, cfg.command, &time, cfg.locale.as_deref())
         } else if let Some(battery_mode) = cfg.battery {
@@ -685,14 +937,79 @@ impl Button {
                 cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
                 cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
             )
+        } else if let Some(target) = cfg.layer_toggle {
+            // Bare layer toggle with no other content; label it with the target.
+            let label = target.clone();
+            Button::new_layer_toggle(target, label)
         } else {
             Button::new_spacer()
         };
-        
+
         button.stacked = stacked;
         button.font_size = font_size;
         button.max_title_length = max_title_length;
+        button.toggle_target = toggle_target;
         button
+    }
+    fn new_slider(kind: SliderKind, theme: Option<&str>) -> Button {
+        let (icon_name, muted_name) = match kind {
+            SliderKind::DisplayBrightness => ("brightness_low", None),
+            SliderKind::KeyboardBacklight => ("backlight_low", None),
+            SliderKind::Volume => ("volume_down", Some("volume_off")),
+        };
+        let load = |name: &str| -> Option<Handle> {
+            match try_load_image(name, theme, DEFAULT_ICON_SIZE, DEFAULT_ICON_SIZE) {
+                Ok(ButtonImage::Svg(handle)) => Some(handle),
+                _ => None,
+            }
+        };
+        Button {
+            action: vec![],
+            active: false,
+            changed: false,
+            image: ButtonImage::Slider {
+                state: Slider::new(kind),
+                icon: load(icon_name),
+                muted_icon: muted_name.and_then(load),
+            },
+            command: None,
+            icon_width: 0.0,
+            icon_height: 0.0,
+            stacked: false,
+            font_size: None,
+            max_title_length: None,
+            toggle_target: None,
+        }
+    }
+    fn new_weather_current(theme: Option<&str>) -> Button {
+        Button {
+            action: vec![],
+            active: false,
+            changed: false,
+            image: ButtonImage::WeatherCurrent(WeatherIcons::load(theme)),
+            command: None,
+            icon_width: 0.0,
+            icon_height: 0.0,
+            stacked: false,
+            font_size: None,
+            max_title_length: None,
+            toggle_target: None,
+        }
+    }
+    fn new_weather_forecast(day: usize, theme: Option<&str>) -> Button {
+        Button {
+            action: vec![],
+            active: false,
+            changed: false,
+            image: ButtonImage::WeatherForecast(day, WeatherIcons::load(theme)),
+            command: None,
+            icon_width: 0.0,
+            icon_height: 0.0,
+            stacked: false,
+            font_size: None,
+            max_title_length: None,
+            toggle_target: None,
+        }
     }
     fn new_spacer() -> Button {
         Button {
@@ -706,6 +1023,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn new_text(text: String, action: Vec<Key>) -> Button {
@@ -720,47 +1038,22 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
-    fn new_layer_toggle(label: String) -> Button {
+    fn new_layer_toggle(target: String, label: String) -> Button {
         Button {
             action: vec![],
             active: false,
             changed: false,
-            image: ButtonImage::LayerToggle(label),
+            image: ButtonImage::LayerToggle(target, label),
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
             stacked: false,
             font_size: None,
             max_title_length: None,
-        }
-    }
-    fn new_layer_toggle_icon(
-        path: impl AsRef<str>,
-        theme: Option<impl AsRef<str>>,
-        icon_width: i32,
-        icon_height: i32,
-    ) -> Button {
-        let image =
-            try_load_image(path, theme, icon_width, icon_height).expect("failed to load icon");
-        Button {
-            action: vec![],
-            image: match image {
-                ButtonImage::Svg(handle) => ButtonImage::LayerToggleIcon(handle),
-                ButtonImage::Bitmap(_) => {
-                    panic!("Layer toggle icons must be SVG, not bitmap")
-                }
-                _ => panic!("Unexpected image type for layer toggle icon"),
-            },
-            command: None,
-            icon_width: icon_width as f64,
-            icon_height: icon_height as f64,
-            active: false,
-            changed: false,
-            stacked: false,
-            font_size: None,
-            max_title_length: None,
+            toggle_target: None,
         }
     }
     fn new_icon(
@@ -783,6 +1076,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn load_battery_image(icon: &str, theme: Option<impl AsRef<str>>) -> Handle {
@@ -841,6 +1135,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
 
@@ -872,6 +1167,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn new_cpu_usage(
@@ -906,6 +1202,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn new_memory_usage(
@@ -940,6 +1237,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn new_active_window(action: Vec<Key>) -> Button {
@@ -954,6 +1252,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn new_active_workspace(
@@ -988,6 +1287,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn needs_faster_refresh(&self) -> bool {
@@ -1016,10 +1316,11 @@ impl Button {
         button_width: u64,
         y_shift: f64,
         sysinfo_mgr: Option<&SystemInfoManager>,
+        weather_mgr: Option<&WeatherManager>,
     ) {
         // Get the content for this button
-        let content = self.get_content(sysinfo_mgr);
-        
+        let content = self.get_content(sysinfo_mgr, weather_mgr);
+
         // Render the content using the unified rendering function
         self.render_content(c, content, height, button_left_edge, button_width, y_shift);
     }
@@ -1042,10 +1343,7 @@ impl Button {
             self.active = active;
             self.changed = true;
 
-            if !matches!(
-                self.image,
-                ButtonImage::LayerToggle(_) | ButtonImage::LayerToggleIcon(_)
-            ) {
+            if !matches!(self.image, ButtonImage::LayerToggle(_, _)) {
                 toggle_keys(uinput, &self.action, active as i32);
                 
                 // Execute command on button press (not release)
@@ -1110,11 +1408,41 @@ impl Button {
             }
         }
     }
-    fn is_layer_toggle(&self) -> bool {
-        matches!(
-            self.image,
-            ButtonImage::LayerToggle(_) | ButtonImage::LayerToggleIcon(_)
-        )
+    fn slider_kind(&self) -> Option<SliderKind> {
+        match &self.image {
+            ButtonImage::Slider { state, .. } => Some(state.kind()),
+            _ => None,
+        }
+    }
+    fn slider_refresh(&mut self) {
+        if let ButtonImage::Slider { state, .. } = &mut self.image {
+            if state.refresh() {
+                self.changed = true;
+            }
+        }
+    }
+    fn set_slider_fraction(&mut self, frac: f64) {
+        if let ButtonImage::Slider { state, .. } = &mut self.image {
+            state.set_fraction(frac);
+            self.changed = true;
+        }
+    }
+    fn slider_commit(&mut self) {
+        if let ButtonImage::Slider { state, .. } = &mut self.image {
+            state.commit();
+        }
+    }
+    fn slider_toggle_mute(&mut self) {
+        if let ButtonImage::Slider { state, .. } = &mut self.image {
+            state.toggle_mute();
+            self.changed = true;
+        }
+    }
+    fn layer_toggle_target(&self) -> Option<&str> {
+        match &self.image {
+            ButtonImage::LayerToggle(target, _) => Some(target),
+            _ => self.toggle_target.as_deref(),
+        }
     }
     fn is_visible(&self, sysinfo_mgr: Option<&SystemInfoManager>) -> bool {
         match self.image {
@@ -1141,16 +1469,19 @@ impl Button {
 
 #[derive(Default)]
 pub struct FunctionLayer {
+    name: String,
     displays_time: bool,
     displays_battery: bool,
     displays_sysinfo: bool,
+    displays_slider: bool,
+    displays_weather: bool,
     buttons: Vec<(usize, Button)>,
     virtual_button_count: usize,
     faster_refresh: bool,
 }
 
 impl FunctionLayer {
-    fn with_config(cfg: Vec<ButtonConfig>) -> FunctionLayer {
+    fn with_config(name: impl Into<String>, cfg: Vec<ButtonConfig>) -> FunctionLayer {
         if cfg.is_empty() {
             panic!("Invalid configuration, layer has 0 buttons");
         }
@@ -1161,6 +1492,8 @@ impl FunctionLayer {
         let displays_sysinfo = cfg.iter().any(|cfg| {
             cfg.cpu_usage || cfg.memory_usage || cfg.active_window || cfg.active_workspace
         });
+        let displays_slider = cfg.iter().any(|cfg| cfg.slider.is_some());
+        let displays_weather = cfg.iter().any(|cfg| cfg.weather.is_some());
         let buttons = cfg
             .into_iter()
             .scan(&mut virtual_button_count, |state, cfg| {
@@ -1176,9 +1509,12 @@ impl FunctionLayer {
             .collect::<Vec<_>>();
         let faster_refresh = buttons.iter().any(|(_, b)| b.needs_faster_refresh());
         FunctionLayer {
+            name: name.into(),
             displays_time,
             displays_battery,
             displays_sysinfo,
+            displays_slider,
+            displays_weather,
             buttons,
             virtual_button_count,
             faster_refresh,
@@ -1193,6 +1529,7 @@ impl FunctionLayer {
         pixel_shift: (f64, f64),
         complete_redraw: bool,
         sysinfo_mgr: Option<&SystemInfoManager>,
+        weather_mgr: Option<&WeatherManager>,
     ) -> Vec<ClipRect> {
         let c = Context::new(surface).unwrap();
         let mut modified_regions = if complete_redraw {
@@ -1315,6 +1652,7 @@ impl FunctionLayer {
                     button_width.ceil() as u64,
                     pixel_shift_y,
                     sysinfo_mgr,
+                    weather_mgr,
                 );
             }
 
@@ -1373,6 +1711,27 @@ impl FunctionLayer {
 
         Some(i)
     }
+
+    // Fraction (0.0..=1.0) of the touch x-position across button `i`'s width.
+    fn slider_fraction(&self, width: u16, i: usize, x: f64) -> f64 {
+        let virtual_button_width =
+            (width as i32 - (BUTTON_SPACING_PX * (self.virtual_button_count - 1) as i32)) as f64
+                / self.virtual_button_count as f64;
+
+        let start = self.buttons[i].0;
+        let end = if i + 1 < self.buttons.len() {
+            self.buttons[i + 1].0
+        } else {
+            self.virtual_button_count
+        };
+
+        let left_edge = (start as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64)).floor();
+        let button_width = virtual_button_width
+            + ((end - start - 1) as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64))
+                .floor();
+
+        ((x - left_edge) / button_width).clamp(0.0, 1.0)
+    }
 }
 
 struct Interface;
@@ -1429,7 +1788,7 @@ where
     );
 }
 
-fn open_drm_backend() -> Option<DrmBackend> {
+fn open_drm_backend(report_final_failure: bool) -> Option<DrmBackend> {
     let mut last_error = None;
 
     for attempt in 1..=DRM_OPEN_ATTEMPTS {
@@ -1450,18 +1809,47 @@ fn open_drm_backend() -> Option<DrmBackend> {
     if let Some(err) = last_error {
         eprintln!("Touch Bar DRM device unavailable after retries: {err}");
     }
-    eprintln!("Not restarting automatically; fix the DRM owner/seat and restart tiny-dfr.service");
+    if report_final_failure {
+        eprintln!(
+            "Not restarting automatically; fix the DRM owner/seat and restart tiny-dfr.service"
+        );
+    }
     None
 }
 
-fn main() {
-    if !DrmBackend::touchbar_card_present() {
-        eprintln!("Touch Bar DRM card is not present; not touching USB");
-        std::process::exit(EXIT_DRM_UNAVAILABLE);
+fn try_touchbar_usb_recovery() {
+    let recovery_enabled = env::var(T2_USB_RECOVERY_ENV)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    if !recovery_enabled {
+        eprintln!(
+            "Touch Bar DRM device unavailable; skipping T2 USB reset. Set {T2_USB_RECOVERY_ENV}=1 to enable recovery."
+        );
+        return;
     }
 
-    let Some(mut drm) = open_drm_backend() else {
-        std::process::exit(EXIT_DRM_UNAVAILABLE);
+    if !is_t2_macbook() {
+        eprintln!("Touch Bar DRM device unavailable and this does not look like a T2 MacBook");
+        return;
+    }
+
+    eprintln!("Touch Bar DRM device unavailable; trying T2 Touch Bar USB recovery");
+    let mut touchbar = T2TouchBar::new();
+    if let Err(err) = touchbar.initialize() {
+        eprintln!("T2 Touch Bar USB recovery failed: {err}");
+    }
+}
+
+fn main() {
+    let mut drm = match open_drm_backend(false) {
+        Some(drm) => drm,
+        None => {
+            try_touchbar_usb_recovery();
+            let Some(drm) = open_drm_backend(true) else {
+                std::process::exit(EXIT_DRM_UNAVAILABLE);
+            };
+            drm
+        }
     };
     let (height, width) = drm.mode().size();
     if panic::catch_unwind(AssertUnwindSafe(|| real_main(&mut drm))).is_ok() {
@@ -1506,6 +1894,7 @@ fn real_main(drm: &mut DrmBackend) {
     let (mut cfg, mut layers) = cfg_mgr.load_config(width);
     let mut pixel_shift = PixelShiftManager::new();
     let sysinfo_mgr = SystemInfoManager::new();
+    let weather_mgr = WeatherManager::new(cfg.weather_location.clone(), cfg.weather_fahrenheit);
     let mut last = Instant::now();
 
     if cfg.drop_privileges {
@@ -1521,8 +1910,8 @@ fn real_main(drm: &mut DrmBackend) {
 
     let mut surface =
         ImageSurface::create(Format::ARgb32, db_width as i32, db_height as i32).unwrap();
-    let mut active_layer = 0;
-    let mut normal_layer = 0;
+    let mut normal_layer = layer_index(&layers, &cfg.default_layer).unwrap_or(0);
+    let mut active_layer = normal_layer;
     let mut needs_complete_redraw = true;
 
     let mut input_tb = Libinput::new_with_udev(Interface);
@@ -1573,6 +1962,7 @@ fn real_main(drm: &mut DrmBackend) {
 
     let mut digitizer: Option<InputDevice> = None;
     let mut touches = HashMap::new();
+    let mut last_volume_tap: Option<Instant> = None;
     let mut last_redraw_ts = if layers[active_layer].faster_refresh {
         Local::now().second()
     } else {
@@ -1580,8 +1970,8 @@ fn real_main(drm: &mut DrmBackend) {
     };
     loop {
         if cfg_mgr.update_config(&mut cfg, &mut layers, width) {
-            active_layer = 0;
-            normal_layer = 0;
+            normal_layer = layer_index(&layers, &cfg.default_layer).unwrap_or(0);
+            active_layer = normal_layer;
             needs_complete_redraw = true;
         }
 
@@ -1628,6 +2018,25 @@ fn real_main(drm: &mut DrmBackend) {
             }
         }
 
+        if layers[active_layer].displays_slider {
+            for button in &mut layers[active_layer].buttons {
+                button.1.slider_refresh();
+            }
+            // Poll often enough that external changes appear live.
+            next_timeout_ms = min(next_timeout_ms, SLIDER_REFRESH_MS);
+        }
+
+        if layers[active_layer].displays_weather {
+            for button in &mut layers[active_layer].buttons {
+                if matches!(
+                    button.1.image,
+                    ButtonImage::WeatherCurrent(_) | ButtonImage::WeatherForecast(_, _)
+                ) {
+                    button.1.changed = true;
+                }
+            }
+        }
+
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
             let shift = if cfg.enable_pixel_shift {
                 pixel_shift.get()
@@ -1639,6 +2048,11 @@ fn real_main(drm: &mut DrmBackend) {
             } else {
                 None
             };
+            let weather_mgr_ref = if layers[active_layer].displays_weather {
+                Some(&weather_mgr)
+            } else {
+                None
+            };
             let clips = layers[active_layer].draw(
                 &cfg,
                 width as i32,
@@ -1647,6 +2061,7 @@ fn real_main(drm: &mut DrmBackend) {
                 shift,
                 needs_complete_redraw,
                 sysinfo_mgr_ref,
+                weather_mgr_ref,
             );
             let data = surface.data().unwrap();
             drm.map().unwrap().as_mut()[..data.len()].copy_from_slice(&data);
@@ -1684,7 +2099,7 @@ fn real_main(drm: &mut DrmBackend) {
                             last = Instant::now();
                         }
                         let new_layer = match key.key_state() {
-                            KeyState::Pressed => 1,
+                            KeyState::Pressed => layer_index(&layers, "FKeys").unwrap_or(normal_layer),
                             KeyState::Released => normal_layer,
                         };
                         if active_layer != new_layer {
@@ -1703,9 +2118,39 @@ fn real_main(drm: &mut DrmBackend) {
                             let y = dn.y_transformed(height as u32);
                             if let Some(btn) = layers[active_layer].hit(width, height, x, y, None) {
                                 touches.insert(dn.seat_slot(), (active_layer, btn));
-                                layers[active_layer].buttons[btn]
-                                    .1
-                                    .set_active(&mut uinput, true);
+                                match layers[active_layer].buttons[btn].1.slider_kind() {
+                                    Some(kind) => {
+                                        // Double-tap the volume slider to toggle mute.
+                                        let mut muted = false;
+                                        if kind == SliderKind::Volume {
+                                            let now = Instant::now();
+                                            if last_volume_tap
+                                                .map(|t| now.duration_since(t) < DOUBLE_TAP_TIMEOUT)
+                                                .unwrap_or(false)
+                                            {
+                                                layers[active_layer].buttons[btn]
+                                                    .1
+                                                    .slider_toggle_mute();
+                                                last_volume_tap = None;
+                                                muted = true;
+                                            } else {
+                                                last_volume_tap = Some(now);
+                                            }
+                                        }
+                                        if !muted {
+                                            let frac = layers[active_layer]
+                                                .slider_fraction(width, btn, x);
+                                            layers[active_layer].buttons[btn]
+                                                .1
+                                                .set_slider_fraction(frac);
+                                        }
+                                    }
+                                    None => {
+                                        layers[active_layer].buttons[btn]
+                                            .1
+                                            .set_active(&mut uinput, true);
+                                    }
+                                }
                             }
                         }
                         TouchEvent::Motion(mtn) => {
@@ -1716,23 +2161,42 @@ fn real_main(drm: &mut DrmBackend) {
                             }
 
                             let (layer, btn) = *touches.get(&mtn.seat_slot()).unwrap();
-                            let hit = layers[active_layer]
-                                .hit(width, height, x, y, Some(btn))
-                                .is_some();
-                            layers[layer].buttons[btn].1.set_active(&mut uinput, hit);
+                            if layers[layer].buttons[btn].1.slider_kind().is_some() {
+                                // Any drag cancels a pending double-tap.
+                                last_volume_tap = None;
+                                let frac = layers[layer].slider_fraction(width, btn, x);
+                                layers[layer].buttons[btn].1.set_slider_fraction(frac);
+                            } else {
+                                let hit = layers[active_layer]
+                                    .hit(width, height, x, y, Some(btn))
+                                    .is_some();
+                                layers[layer].buttons[btn].1.set_active(&mut uinput, hit);
+                            }
                         }
                         TouchEvent::Up(up) => {
                             if !touches.contains_key(&up.seat_slot()) {
                                 continue;
                             }
                             let (layer, btn) = *touches.get(&up.seat_slot()).unwrap();
-                            let is_layer_toggle = layers[layer].buttons[btn].1.is_layer_toggle();
+                            if layers[layer].buttons[btn].1.slider_kind().is_some() {
+                                layers[layer].buttons[btn].1.slider_commit();
+                                touches.remove(&up.seat_slot());
+                                continue;
+                            }
+                            let layer_toggle_target = layers[layer].buttons[btn]
+                                .1
+                                .layer_toggle_target()
+                                .map(str::to_string);
                             layers[layer].buttons[btn].1.set_active(&mut uinput, false);
                             touches.remove(&up.seat_slot());
-                            if is_layer_toggle && layers.len() > 2 {
-                                normal_layer = if normal_layer == 2 { 0 } else { 2 };
-                                active_layer = normal_layer;
-                                needs_complete_redraw = true;
+                            if let Some(target) = layer_toggle_target {
+                                if let Some(target_layer) = layer_index(&layers, &target) {
+                                    normal_layer = target_layer;
+                                    active_layer = normal_layer;
+                                    needs_complete_redraw = true;
+                                } else {
+                                    eprintln!("LayerToggle target '{}' does not exist", target);
+                                }
                             }
                         }
                         _ => {}

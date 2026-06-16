@@ -19,17 +19,19 @@ TimeoutStartSec=60s
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectKernelTunables=true
+# tiny-dfr writes /sys/class/backlight/*/brightness, so /sys must remain writable
+# for matching udev-permitted backlight devices.
+ProtectKernelTunables=false
 ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=strict
 RestrictNamespaces=true
 RestrictSUIDSGID=true
-RestrictAddressFamilies=AF_UNIX AF_NETLINK
+# AF_INET/AF_INET6 are required for the weather buttons to fetch from wttr.in.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 
-# Allow access to Hyprland socket in /run/user and launching apps
-# Use tmpfs to allow /run/user access while still protecting actual home directories
-ProtectHome=tmpfs
+# Allow reading ~/.config/tiny-dfr/config.toml while still blocking home writes.
+ProtectHome=read-only
 
 # Allow reading /proc to detect Hyprland process environment
 ProtectProc=default

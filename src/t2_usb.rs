@@ -27,7 +27,7 @@ impl T2TouchBar {
     /// The Touch Bar typically appears as USB device 05ac:8302
     pub fn find_device(&mut self) -> Result<()> {
         let usb_devices_path = Path::new("/sys/bus/usb/devices");
-        
+
         if !usb_devices_path.exists() {
             return Err(anyhow!("USB devices path does not exist"));
         }
@@ -35,7 +35,7 @@ impl T2TouchBar {
         for entry in fs::read_dir(usb_devices_path)? {
             let entry = entry?;
             let path = entry.path();
-            
+
             // Check if this is a USB device directory (not a USB interface)
             if !path.is_dir() {
                 continue;
@@ -44,7 +44,7 @@ impl T2TouchBar {
             // Read vendor and product IDs
             let idvendor_path = path.join("idVendor");
             let idproduct_path = path.join("idProduct");
-            
+
             if !idvendor_path.exists() || !idproduct_path.exists() {
                 continue;
             }
@@ -73,7 +73,9 @@ impl T2TouchBar {
     /// This is required after boot and after suspend/resume
     pub fn reset(&self) -> Result<()> {
         if self.usb_device_path.is_empty() {
-            return Err(anyhow!("USB device path not set. Call find_device() first."));
+            return Err(anyhow!(
+                "USB device path not set. Call find_device() first."
+            ));
         }
 
         let busnum_path = format!("{}/busnum", self.usb_device_path);
@@ -103,8 +105,10 @@ impl T2TouchBar {
         unsafe {
             let ret = libc::ioctl(fd, USBDEVFS_RESET, 0);
             if ret < 0 {
-                return Err(anyhow!("USB reset ioctl failed: {}", 
-                    std::io::Error::last_os_error()));
+                return Err(anyhow!(
+                    "USB reset ioctl failed: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
         }
 
@@ -116,7 +120,7 @@ impl T2TouchBar {
     /// This can take up to 30 seconds after boot
     pub fn wait_for_enumeration(&mut self, timeout_secs: u64) -> Result<()> {
         let start = std::time::Instant::now();
-        
+
         while start.elapsed().as_secs() < timeout_secs {
             if self.find_device().is_ok() {
                 return Ok(());

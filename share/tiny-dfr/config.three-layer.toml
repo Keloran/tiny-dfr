@@ -15,7 +15,7 @@
 # Copy this to /etc/tiny-dfr/config.toml to use it.
 
 # Default layer to show on startup
-# Options: "SystemInfo", "FKeys", "Media"
+# Options: "SystemInfo", "FKeys", "Media", or any name under [Layers]
 DefaultLayer = "SystemInfo"
 
 # Display settings
@@ -182,6 +182,7 @@ MediaLayerKeys = [
 #     - "rofi -show window" - Show window switcher
 #
 # Layer Navigation:
-#   - Single-press FN: Show F-keys layer
-#   - Double-press FN (within 200ms): Cycle to next layer
-#   - Release FN: Return to default layer (SystemInfo)
+#   - Hold FN: Show F-keys layer
+#   - LayerToggle = "Media" switches to the Media layer by name
+#   - LayerToggle = "SystemInfo" switches back to the SystemInfo layer
+#   - Add custom layers with [[Layers.Weather]], [[Layers.Tools]], etc.
