@@ -44,6 +44,7 @@ mod config;
 mod display;
 mod fonts;
 mod pixel_shift;
+mod slider;
 mod sysinfo_manager;
 mod t2_usb;
 
@@ -52,6 +53,7 @@ use backlight::BacklightManager;
 use config::{ButtonConfig, Config};
 use display::DrmBackend;
 use pixel_shift::{PixelShiftManager, PIXEL_SHIFT_WIDTH_PX};
+use slider::{Slider, SliderKind};
 use sysinfo_manager::SystemInfoManager;
 use t2_usb::{is_t2_macbook, T2TouchBar};
 
@@ -60,6 +62,8 @@ const BUTTON_COLOR_INACTIVE: f64 = 0.200;
 const BUTTON_COLOR_ACTIVE: f64 = 0.400;
 const DEFAULT_ICON_SIZE: i32 = 48;
 const TIMEOUT_MS: i32 = 10 * 1000;
+const SLIDER_REFRESH_MS: i32 = 1000;
+const DOUBLE_TAP_TIMEOUT: Duration = Duration::from_millis(300);
 const EXIT_DRM_UNAVAILABLE: i32 = 75;
 const DRM_OPEN_ATTEMPTS: u32 = 6;
 const DRM_OPEN_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -106,6 +110,11 @@ enum ButtonImage {
     MemoryUsage(Option<Handle>),
     ActiveWindow,
     ActiveWorkspace(Option<Handle>),
+    Slider {
+        state: Slider,
+        icon: Option<Handle>,
+        muted_icon: Option<Handle>,
+    },
     Spacer,
 }
 
@@ -148,6 +157,14 @@ enum ButtonContent {
     },
     // Clipped text (for window titles that might overflow)
     ClippedText(String),
+    // Slider with a live value indicator (brightness / backlight / volume)
+    SliderBar {
+        fraction: f64,
+        muted: bool,
+        percent: u32,
+        icon: Option<Handle>,
+        muted_icon: Option<Handle>,
+    },
     // Nothing (spacer)
     Empty,
 }
@@ -328,6 +345,17 @@ impl Button {
                     ButtonContent::Empty
                 }
             }
+            ButtonImage::Slider {
+                state,
+                icon,
+                muted_icon,
+            } => ButtonContent::SliderBar {
+                fraction: state.value(),
+                muted: state.muted(),
+                percent: state.percent(),
+                icon: icon.clone(),
+                muted_icon: muted_icon.clone(),
+            },
             ButtonImage::Spacer => ButtonContent::Empty,
         }
     }
@@ -456,6 +484,64 @@ impl Button {
 
                 // Restore context
                 c.restore().unwrap();
+            }
+            ButtonContent::SliderBar {
+                fraction,
+                muted,
+                percent,
+                icon,
+                muted_icon,
+            } => {
+                let pad = 14.0;
+                let icon_size = 26.0;
+                let cy = y_shift + height as f64 / 2.0;
+
+                // Left icon: kind indicator, swapped for a muted glyph when muted.
+                let left_icon = if muted {
+                    muted_icon.as_ref().or(icon.as_ref())
+                } else {
+                    icon.as_ref()
+                };
+                let mut track_left = button_left_edge + pad;
+                if let Some(svg) = left_icon {
+                    let iy = cy - icon_size / 2.0;
+                    svg.render_document(c, &Rectangle::new(track_left, iy, icon_size, icon_size))
+                        .unwrap();
+                    track_left += icon_size + 10.0;
+                }
+
+                // Percentage readout, right-aligned.
+                let pct_text = format!("{}%", percent);
+                let extents = c.text_extents(&pct_text).unwrap();
+                let text_x = button_left_edge + button_width as f64 - pad - extents.width();
+                let track_right = (text_x - 12.0).max(track_left + 10.0);
+                let track_w = (track_right - track_left).max(10.0);
+
+                let track_h = 6.0;
+                let ty = cy - track_h / 2.0;
+
+                // Track background.
+                c.set_source_rgb(0.3, 0.3, 0.3);
+                c.rectangle(track_left, ty, track_w, track_h);
+                c.fill().unwrap();
+
+                // Filled portion (dimmed when muted).
+                let fill_level = if muted { 0.5 } else { 1.0 };
+                let fill_w = (track_w * fraction).max(0.0);
+                c.set_source_rgb(fill_level, fill_level, fill_level);
+                c.rectangle(track_left, ty, fill_w, track_h);
+                c.fill().unwrap();
+
+                // Thumb indicator.
+                let thumb_x = track_left + track_w * fraction;
+                c.set_source_rgb(1.0, 1.0, 1.0);
+                c.arc(thumb_x, cy, 8.0, 0.0, std::f64::consts::PI * 2.0);
+                c.fill().unwrap();
+
+                // Percentage text.
+                c.set_source_rgb(1.0, 1.0, 1.0);
+                c.move_to(text_x, cy + extents.height() / 2.0);
+                c.show_text(&pct_text).unwrap();
             }
             ButtonContent::Empty => {}
         }
@@ -637,7 +723,18 @@ impl Button {
         let font_size = cfg.font_size;
         let max_title_length = cfg.max_title_length;
         
-        let mut button = if let Some(target) = cfg.layer_toggle {
+        let mut button = if let Some(slider) = cfg.slider {
+            match SliderKind::parse(&slider) {
+                Some(kind) => Button::new_slider(kind, cfg.theme.as_deref()),
+                None => {
+                    eprintln!(
+                        "Unknown Slider kind '{}'; expected display_brightness, keyboard_backlight, or volume",
+                        slider
+                    );
+                    Button::new_spacer()
+                }
+            }
+        } else if let Some(target) = cfg.layer_toggle {
             if let Some(icon) = cfg.icon {
                 Button::new_layer_toggle_icon(
                     target,
@@ -705,6 +802,35 @@ impl Button {
         button.font_size = font_size;
         button.max_title_length = max_title_length;
         button
+    }
+    fn new_slider(kind: SliderKind, theme: Option<&str>) -> Button {
+        let (icon_name, muted_name) = match kind {
+            SliderKind::DisplayBrightness => ("brightness_low", None),
+            SliderKind::KeyboardBacklight => ("backlight_low", None),
+            SliderKind::Volume => ("volume_down", Some("volume_off")),
+        };
+        let load = |name: &str| -> Option<Handle> {
+            match try_load_image(name, theme, DEFAULT_ICON_SIZE, DEFAULT_ICON_SIZE) {
+                Ok(ButtonImage::Svg(handle)) => Some(handle),
+                _ => None,
+            }
+        };
+        Button {
+            action: vec![],
+            active: false,
+            changed: false,
+            image: ButtonImage::Slider {
+                state: Slider::new(kind),
+                icon: load(icon_name),
+                muted_icon: muted_name.and_then(load),
+            },
+            command: None,
+            icon_width: 0.0,
+            icon_height: 0.0,
+            stacked: false,
+            font_size: None,
+            max_title_length: None,
+        }
     }
     fn new_spacer() -> Button {
         Button {
@@ -1123,6 +1249,36 @@ impl Button {
             }
         }
     }
+    fn slider_kind(&self) -> Option<SliderKind> {
+        match &self.image {
+            ButtonImage::Slider { state, .. } => Some(state.kind()),
+            _ => None,
+        }
+    }
+    fn slider_refresh(&mut self) {
+        if let ButtonImage::Slider { state, .. } = &mut self.image {
+            if state.refresh() {
+                self.changed = true;
+            }
+        }
+    }
+    fn set_slider_fraction(&mut self, frac: f64) {
+        if let ButtonImage::Slider { state, .. } = &mut self.image {
+            state.set_fraction(frac);
+            self.changed = true;
+        }
+    }
+    fn slider_commit(&mut self) {
+        if let ButtonImage::Slider { state, .. } = &mut self.image {
+            state.commit();
+        }
+    }
+    fn slider_toggle_mute(&mut self) {
+        if let ButtonImage::Slider { state, .. } = &mut self.image {
+            state.toggle_mute();
+            self.changed = true;
+        }
+    }
     fn layer_toggle_target(&self) -> Option<&str> {
         match &self.image {
             ButtonImage::LayerToggle(target, _) => Some(target),
@@ -1159,6 +1315,7 @@ pub struct FunctionLayer {
     displays_time: bool,
     displays_battery: bool,
     displays_sysinfo: bool,
+    displays_slider: bool,
     buttons: Vec<(usize, Button)>,
     virtual_button_count: usize,
     faster_refresh: bool,
@@ -1176,6 +1333,7 @@ impl FunctionLayer {
         let displays_sysinfo = cfg.iter().any(|cfg| {
             cfg.cpu_usage || cfg.memory_usage || cfg.active_window || cfg.active_workspace
         });
+        let displays_slider = cfg.iter().any(|cfg| cfg.slider.is_some());
         let buttons = cfg
             .into_iter()
             .scan(&mut virtual_button_count, |state, cfg| {
@@ -1195,6 +1353,7 @@ impl FunctionLayer {
             displays_time,
             displays_battery,
             displays_sysinfo,
+            displays_slider,
             buttons,
             virtual_button_count,
             faster_refresh,
@@ -1388,6 +1547,27 @@ impl FunctionLayer {
         }
 
         Some(i)
+    }
+
+    // Fraction (0.0..=1.0) of the touch x-position across button `i`'s width.
+    fn slider_fraction(&self, width: u16, i: usize, x: f64) -> f64 {
+        let virtual_button_width =
+            (width as i32 - (BUTTON_SPACING_PX * (self.virtual_button_count - 1) as i32)) as f64
+                / self.virtual_button_count as f64;
+
+        let start = self.buttons[i].0;
+        let end = if i + 1 < self.buttons.len() {
+            self.buttons[i + 1].0
+        } else {
+            self.virtual_button_count
+        };
+
+        let left_edge = (start as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64)).floor();
+        let button_width = virtual_button_width
+            + ((end - start - 1) as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64))
+                .floor();
+
+        ((x - left_edge) / button_width).clamp(0.0, 1.0)
     }
 }
 
@@ -1618,6 +1798,7 @@ fn real_main(drm: &mut DrmBackend) {
 
     let mut digitizer: Option<InputDevice> = None;
     let mut touches = HashMap::new();
+    let mut last_volume_tap: Option<Instant> = None;
     let mut last_redraw_ts = if layers[active_layer].faster_refresh {
         Local::now().second()
     } else {
@@ -1671,6 +1852,14 @@ fn real_main(drm: &mut DrmBackend) {
                     _ => {}
                 }
             }
+        }
+
+        if layers[active_layer].displays_slider {
+            for button in &mut layers[active_layer].buttons {
+                button.1.slider_refresh();
+            }
+            // Poll often enough that external changes appear live.
+            next_timeout_ms = min(next_timeout_ms, SLIDER_REFRESH_MS);
         }
 
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
@@ -1748,9 +1937,39 @@ fn real_main(drm: &mut DrmBackend) {
                             let y = dn.y_transformed(height as u32);
                             if let Some(btn) = layers[active_layer].hit(width, height, x, y, None) {
                                 touches.insert(dn.seat_slot(), (active_layer, btn));
-                                layers[active_layer].buttons[btn]
-                                    .1
-                                    .set_active(&mut uinput, true);
+                                match layers[active_layer].buttons[btn].1.slider_kind() {
+                                    Some(kind) => {
+                                        // Double-tap the volume slider to toggle mute.
+                                        let mut muted = false;
+                                        if kind == SliderKind::Volume {
+                                            let now = Instant::now();
+                                            if last_volume_tap
+                                                .map(|t| now.duration_since(t) < DOUBLE_TAP_TIMEOUT)
+                                                .unwrap_or(false)
+                                            {
+                                                layers[active_layer].buttons[btn]
+                                                    .1
+                                                    .slider_toggle_mute();
+                                                last_volume_tap = None;
+                                                muted = true;
+                                            } else {
+                                                last_volume_tap = Some(now);
+                                            }
+                                        }
+                                        if !muted {
+                                            let frac = layers[active_layer]
+                                                .slider_fraction(width, btn, x);
+                                            layers[active_layer].buttons[btn]
+                                                .1
+                                                .set_slider_fraction(frac);
+                                        }
+                                    }
+                                    None => {
+                                        layers[active_layer].buttons[btn]
+                                            .1
+                                            .set_active(&mut uinput, true);
+                                    }
+                                }
                             }
                         }
                         TouchEvent::Motion(mtn) => {
@@ -1761,16 +1980,28 @@ fn real_main(drm: &mut DrmBackend) {
                             }
 
                             let (layer, btn) = *touches.get(&mtn.seat_slot()).unwrap();
-                            let hit = layers[active_layer]
-                                .hit(width, height, x, y, Some(btn))
-                                .is_some();
-                            layers[layer].buttons[btn].1.set_active(&mut uinput, hit);
+                            if layers[layer].buttons[btn].1.slider_kind().is_some() {
+                                // Any drag cancels a pending double-tap.
+                                last_volume_tap = None;
+                                let frac = layers[layer].slider_fraction(width, btn, x);
+                                layers[layer].buttons[btn].1.set_slider_fraction(frac);
+                            } else {
+                                let hit = layers[active_layer]
+                                    .hit(width, height, x, y, Some(btn))
+                                    .is_some();
+                                layers[layer].buttons[btn].1.set_active(&mut uinput, hit);
+                            }
                         }
                         TouchEvent::Up(up) => {
                             if !touches.contains_key(&up.seat_slot()) {
                                 continue;
                             }
                             let (layer, btn) = *touches.get(&up.seat_slot()).unwrap();
+                            if layers[layer].buttons[btn].1.slider_kind().is_some() {
+                                layers[layer].buttons[btn].1.slider_commit();
+                                touches.remove(&up.seat_slot());
+                                continue;
+                            }
                             let layer_toggle_target = layers[layer].buttons[btn]
                                 .1
                                 .layer_toggle_target()

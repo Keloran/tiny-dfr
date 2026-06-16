@@ -112,6 +112,7 @@ pub struct ButtonConfig {
     pub battery: Option<String>,
     pub locale: Option<String>,
     pub layer_toggle: Option<String>,
+    pub slider: Option<String>,
     #[serde(default)]
     pub cpu_usage: bool,
     #[serde(default)]
@@ -202,6 +203,7 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
                     locale: None,
                     battery: None,
                     layer_toggle: None,
+                    slider: None,
                     cpu_usage: false,
                     memory_usage: false,
                     active_window: false,
