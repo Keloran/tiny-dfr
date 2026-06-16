@@ -32,6 +32,15 @@ so it is safe even with a customized service file:
 sudo install -Dm644 etc/systemd/system/tiny-dfr.service.d/network.conf /etc/systemd/system/tiny-dfr.service.d/network.conf
 ```
 
+The battery button's power-profile toggle runs `powerprofilesctl` from the
+service scope, which polkit does not treat as part of your active login
+session, so the switch is denied by default. Install the packaged polkit rule
+to authorize `wheel` members to switch profiles (no daemon restart needed):
+
+```sh
+sudo install -Dm644 etc/polkit-1/rules.d/49-tiny-dfr-power-profiles.rules /etc/polkit-1/rules.d/49-tiny-dfr-power-profiles.rules
+```
+
 Add your user to the required groups, then log out and back in:
 
 ```sh

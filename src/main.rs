@@ -1461,6 +1461,19 @@ impl Button {
             _ => self.toggle_target.as_deref(),
         }
     }
+    // A button is interactive only if pressing it actually does something:
+    // emits keys, runs a command, switches layers, or is a draggable slider.
+    // Display-only buttons (time, weather, cpu/mem readouts, plain labels)
+    // have nothing to do on press, so we ignore touches on them rather than
+    // flashing a highlight that makes the button look broken.
+    fn is_interactive(&self) -> bool {
+        if matches!(self.image, ButtonImage::Slider { .. }) {
+            return true;
+        }
+        !self.action.is_empty()
+            || self.command.is_some()
+            || self.layer_toggle_target().is_some()
+    }
     fn is_visible(&self, sysinfo_mgr: Option<&SystemInfoManager>) -> bool {
         match self.image {
             ButtonImage::ActiveWindow | ButtonImage::ActiveWorkspace(_) => sysinfo_mgr
@@ -1723,6 +1736,12 @@ impl FunctionLayer {
             || y < 0.1 * height as f64
             || y > 0.9 * height as f64
         {
+            return None;
+        }
+
+        // Ignore presses on buttons that have no action to perform so they
+        // don't flash an active highlight and appear broken.
+        if !self.buttons[i].1.is_interactive() {
             return None;
         }
 
