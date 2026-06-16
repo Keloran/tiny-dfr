@@ -27,7 +27,8 @@ ProtectKernelLogs=true
 ProtectControlGroups=strict
 RestrictNamespaces=true
 RestrictSUIDSGID=true
-RestrictAddressFamilies=AF_UNIX AF_NETLINK
+# AF_INET/AF_INET6 are required for the weather buttons to fetch from wttr.in.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 
 # Allow reading ~/.config/tiny-dfr/config.toml while still blocking home writes.
 ProtectHome=read-only

@@ -26,6 +26,8 @@ pub struct Config {
     pub active_brightness: u32,
     pub double_press_switch_layers: u32,
     pub drop_privileges: bool,
+    pub weather_location: Option<String>,
+    pub weather_fahrenheit: bool,
 }
 
 #[derive(Deserialize)]
@@ -42,6 +44,8 @@ struct ConfigProxy {
     auto_add_esc_key: Option<bool>,
     show_esc_key: Option<bool>,
     drop_privileges: Option<bool>,
+    weather_location: Option<String>,
+    weather_units: Option<String>,
     primary_layer_keys: Option<Vec<ButtonConfig>>,
     system_info_layer_keys: Option<Vec<ButtonConfig>>,
     media_layer_keys: Option<Vec<ButtonConfig>>,
@@ -63,6 +67,8 @@ impl ConfigProxy {
         self.auto_add_esc_key = other.auto_add_esc_key.or(self.auto_add_esc_key);
         self.show_esc_key = other.show_esc_key.or(self.show_esc_key);
         self.drop_privileges = other.drop_privileges.or(self.drop_privileges);
+        self.weather_location = other.weather_location.or(self.weather_location.take());
+        self.weather_units = other.weather_units.or(self.weather_units.take());
         self.primary_layer_keys = other.primary_layer_keys.or(self.primary_layer_keys.take());
         self.system_info_layer_keys = other
             .system_info_layer_keys
@@ -113,6 +119,8 @@ pub struct ButtonConfig {
     pub locale: Option<String>,
     pub layer_toggle: Option<String>,
     pub slider: Option<String>,
+    pub weather: Option<String>,
+    pub weather_day: Option<usize>,
     #[serde(default)]
     pub cpu_usage: bool,
     #[serde(default)]
@@ -204,6 +212,8 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
                     battery: None,
                     layer_toggle: None,
                     slider: None,
+                    weather: None,
+                    weather_day: None,
                     cpu_usage: false,
                     memory_usage: false,
                     active_window: false,
@@ -255,6 +265,11 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
         active_brightness: base.active_brightness.unwrap(),
         double_press_switch_layers: base.double_press_switch_layers.unwrap(),
         drop_privileges: base.drop_privileges.unwrap_or(true),
+        weather_location: base.weather_location,
+        weather_fahrenheit: base
+            .weather_units
+            .map(|u| matches!(u.to_ascii_lowercase().as_str(), "fahrenheit" | "imperial" | "f"))
+            .unwrap_or(false),
     };
     (cfg, layers)
 }

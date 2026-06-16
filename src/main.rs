@@ -47,6 +47,7 @@ mod pixel_shift;
 mod slider;
 mod sysinfo_manager;
 mod t2_usb;
+mod weather;
 
 use crate::config::ConfigManager;
 use backlight::BacklightManager;
@@ -56,6 +57,7 @@ use pixel_shift::{PixelShiftManager, PIXEL_SHIFT_WIDTH_PX};
 use slider::{Slider, SliderKind};
 use sysinfo_manager::SystemInfoManager;
 use t2_usb::{is_t2_macbook, T2TouchBar};
+use weather::WeatherManager;
 
 const BUTTON_SPACING_PX: i32 = 16;
 const BUTTON_COLOR_INACTIVE: f64 = 0.200;
@@ -105,7 +107,6 @@ enum ButtonImage {
     Time(Vec<ChronoItem<'static>>, Locale),
     Battery(String, BatteryIconMode, BatteryImages),
     LayerToggle(String, String),
-    LayerToggleIcon(String, Handle),
     CpuUsage(Option<Handle>),
     MemoryUsage(Option<Handle>),
     ActiveWindow,
@@ -115,6 +116,8 @@ enum ButtonImage {
         icon: Option<Handle>,
         muted_icon: Option<Handle>,
     },
+    WeatherCurrent,
+    WeatherForecast(usize),
     Spacer,
 }
 
@@ -133,6 +136,7 @@ struct Button {
     stacked: bool,
     font_size: Option<f64>,
     max_title_length: Option<usize>,
+    toggle_target: Option<String>,
 }
 
 // Unified rendering structures
@@ -157,6 +161,8 @@ enum ButtonContent {
     },
     // Clipped text (for window titles that might overflow)
     ClippedText(String),
+    // Multiple centered lines of text (no icon)
+    MultilineText(Vec<String>),
     // Slider with a live value indicator (brightness / backlight / volume)
     SliderBar {
         fraction: f64,
@@ -171,12 +177,16 @@ enum ButtonContent {
 
 impl Button {
     // Get the content to render based on button type
-    fn get_content(&self, sysinfo_mgr: Option<&SystemInfoManager>) -> ButtonContent {
+    fn get_content(
+        &self,
+        sysinfo_mgr: Option<&SystemInfoManager>,
+        weather_mgr: Option<&WeatherManager>,
+    ) -> ButtonContent {
         match &self.image {
             ButtonImage::Text(text) | ButtonImage::LayerToggle(_, text) => {
                 ButtonContent::SimpleText(text.clone())
             }
-            ButtonImage::Svg(svg) | ButtonImage::LayerToggleIcon(_, svg) => {
+            ButtonImage::Svg(svg) => {
                 ButtonContent::Icon(svg.clone(), self.icon_width.min(self.icon_height))
             }
             ButtonImage::Bitmap(surf) => {
@@ -356,6 +366,60 @@ impl Button {
                 icon: icon.clone(),
                 muted_icon: muted_icon.clone(),
             },
+            ButtonImage::WeatherCurrent => {
+                if let Some(mgr) = weather_mgr {
+                    let d = mgr.data();
+                    if d.available {
+                        let temp = d
+                            .current_temp
+                            .map(|t| format!("{:.0}{}", t, d.unit))
+                            .unwrap_or_else(|| "--".to_string());
+                        if self.stacked {
+                            let mut lines = Vec::new();
+                            if !d.city.is_empty() {
+                                lines.push(d.city.clone());
+                            }
+                            if !d.current_desc.is_empty() {
+                                lines.push(d.current_desc.clone());
+                            }
+                            lines.push(temp);
+                            ButtonContent::MultilineText(lines)
+                        } else if d.current_desc.is_empty() {
+                            ButtonContent::SimpleText(temp)
+                        } else {
+                            ButtonContent::SimpleText(format!("{} {}", d.current_desc, temp))
+                        }
+                    } else {
+                        ButtonContent::SimpleText("Weather…".to_string())
+                    }
+                } else {
+                    ButtonContent::Empty
+                }
+            }
+            ButtonImage::WeatherForecast(day) => {
+                if let Some(mgr) = weather_mgr {
+                    let d = mgr.data();
+                    if let Some(forecast) = d.days.get(*day) {
+                        let mut lines = vec![format!(
+                            "{}/{}{}",
+                            forecast.tmax.round() as i64,
+                            forecast.tmin.round() as i64,
+                            d.unit
+                        )];
+                        if !forecast.weekday.is_empty() {
+                            lines.insert(0, forecast.weekday.clone());
+                        }
+                        if !forecast.desc.is_empty() {
+                            lines.push(forecast.desc.clone());
+                        }
+                        ButtonContent::MultilineText(lines)
+                    } else {
+                        ButtonContent::SimpleText("--".to_string())
+                    }
+                } else {
+                    ButtonContent::Empty
+                }
+            }
             ButtonImage::Spacer => ButtonContent::Empty,
         }
     }
@@ -484,6 +548,29 @@ impl Button {
 
                 // Restore context
                 c.restore().unwrap();
+            }
+            ButtonContent::MultilineText(lines) => {
+                let text_spacing = 2.0;
+                let mut line_extents = Vec::new();
+                let mut total_height = 0.0;
+                for (i, line) in lines.iter().enumerate() {
+                    let extents = c.text_extents(line).unwrap();
+                    total_height += extents.height();
+                    if i < lines.len() - 1 {
+                        total_height += text_spacing;
+                    }
+                    line_extents.push(extents);
+                }
+
+                let mut current_y =
+                    y_shift + (height as f64 / 2.0 - total_height / 2.0).round();
+                for (line, extents) in lines.iter().zip(line_extents.iter()) {
+                    let x = button_left_edge
+                        + (button_width as f64 / 2.0 - extents.width() / 2.0).round();
+                    c.move_to(x, current_y + extents.height());
+                    c.show_text(line).unwrap();
+                    current_y += extents.height() + text_spacing;
+                }
             }
             ButtonContent::SliderBar {
                 fraction,
@@ -722,7 +809,12 @@ impl Button {
         let stacked = cfg.stacked;
         let font_size = cfg.font_size;
         let max_title_length = cfg.max_title_length;
-        
+        // A LayerToggle can be combined with any button content (e.g. a CPU
+        // button that also switches layers). Capture it here and apply it to
+        // whatever button we build below; a bare LayerToggle with no content
+        // falls through to the dedicated toggle button at the end.
+        let toggle_target = cfg.layer_toggle.clone();
+
         let mut button = if let Some(slider) = cfg.slider {
             match SliderKind::parse(&slider) {
                 Some(kind) => Button::new_slider(kind, cfg.theme.as_deref()),
@@ -734,18 +826,14 @@ impl Button {
                     Button::new_spacer()
                 }
             }
-        } else if let Some(target) = cfg.layer_toggle {
-            if let Some(icon) = cfg.icon {
-                Button::new_layer_toggle_icon(
-                    target,
-                    icon,
-                    cfg.theme,
-                    cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
-                    cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
-                )
-            } else {
-                let label = cfg.text.unwrap_or_else(|| target.clone());
-                Button::new_layer_toggle(target, label)
+        } else if let Some(weather) = cfg.weather {
+            match weather.as_str() {
+                "current" => Button::new_weather_current(),
+                "forecast" => Button::new_weather_forecast(cfg.weather_day.unwrap_or(0)),
+                _ => {
+                    eprintln!("Unknown Weather kind '{}'; expected current or forecast", weather);
+                    Button::new_spacer()
+                }
             }
         } else if let Some(text) = cfg.text {
             Button::new_text(text, cfg.action)
@@ -794,13 +882,18 @@ impl Button {
                 cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
                 cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
             )
+        } else if let Some(target) = cfg.layer_toggle {
+            // Bare layer toggle with no other content; label it with the target.
+            let label = target.clone();
+            Button::new_layer_toggle(target, label)
         } else {
             Button::new_spacer()
         };
-        
+
         button.stacked = stacked;
         button.font_size = font_size;
         button.max_title_length = max_title_length;
+        button.toggle_target = toggle_target;
         button
     }
     fn new_slider(kind: SliderKind, theme: Option<&str>) -> Button {
@@ -830,6 +923,37 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
+        }
+    }
+    fn new_weather_current() -> Button {
+        Button {
+            action: vec![],
+            active: false,
+            changed: false,
+            image: ButtonImage::WeatherCurrent,
+            command: None,
+            icon_width: 0.0,
+            icon_height: 0.0,
+            stacked: false,
+            font_size: None,
+            max_title_length: None,
+            toggle_target: None,
+        }
+    }
+    fn new_weather_forecast(day: usize) -> Button {
+        Button {
+            action: vec![],
+            active: false,
+            changed: false,
+            image: ButtonImage::WeatherForecast(day),
+            command: None,
+            icon_width: 0.0,
+            icon_height: 0.0,
+            stacked: false,
+            font_size: None,
+            max_title_length: None,
+            toggle_target: None,
         }
     }
     fn new_spacer() -> Button {
@@ -844,6 +968,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn new_text(text: String, action: Vec<Key>) -> Button {
@@ -858,6 +983,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn new_layer_toggle(target: String, label: String) -> Button {
@@ -872,34 +998,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
-        }
-    }
-    fn new_layer_toggle_icon(
-        target: String,
-        path: impl AsRef<str>,
-        theme: Option<impl AsRef<str>>,
-        icon_width: i32,
-        icon_height: i32,
-    ) -> Button {
-        let image =
-            try_load_image(path, theme, icon_width, icon_height).expect("failed to load icon");
-        Button {
-            action: vec![],
-            image: match image {
-                ButtonImage::Svg(handle) => ButtonImage::LayerToggleIcon(target, handle),
-                ButtonImage::Bitmap(_) => {
-                    panic!("Layer toggle icons must be SVG, not bitmap")
-                }
-                _ => panic!("Unexpected image type for layer toggle icon"),
-            },
-            command: None,
-            icon_width: icon_width as f64,
-            icon_height: icon_height as f64,
-            active: false,
-            changed: false,
-            stacked: false,
-            font_size: None,
-            max_title_length: None,
+            toggle_target: None,
         }
     }
     fn new_icon(
@@ -922,6 +1021,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn load_battery_image(icon: &str, theme: Option<impl AsRef<str>>) -> Handle {
@@ -980,6 +1080,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
 
@@ -1011,6 +1112,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn new_cpu_usage(
@@ -1045,6 +1147,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn new_memory_usage(
@@ -1079,6 +1182,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn new_active_window(action: Vec<Key>) -> Button {
@@ -1093,6 +1197,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn new_active_workspace(
@@ -1127,6 +1232,7 @@ impl Button {
             stacked: false,
             font_size: None,
             max_title_length: None,
+            toggle_target: None,
         }
     }
     fn needs_faster_refresh(&self) -> bool {
@@ -1155,10 +1261,11 @@ impl Button {
         button_width: u64,
         y_shift: f64,
         sysinfo_mgr: Option<&SystemInfoManager>,
+        weather_mgr: Option<&WeatherManager>,
     ) {
         // Get the content for this button
-        let content = self.get_content(sysinfo_mgr);
-        
+        let content = self.get_content(sysinfo_mgr, weather_mgr);
+
         // Render the content using the unified rendering function
         self.render_content(c, content, height, button_left_edge, button_width, y_shift);
     }
@@ -1181,10 +1288,7 @@ impl Button {
             self.active = active;
             self.changed = true;
 
-            if !matches!(
-                self.image,
-                ButtonImage::LayerToggle(_, _) | ButtonImage::LayerToggleIcon(_, _)
-            ) {
+            if !matches!(self.image, ButtonImage::LayerToggle(_, _)) {
                 toggle_keys(uinput, &self.action, active as i32);
                 
                 // Execute command on button press (not release)
@@ -1282,8 +1386,7 @@ impl Button {
     fn layer_toggle_target(&self) -> Option<&str> {
         match &self.image {
             ButtonImage::LayerToggle(target, _) => Some(target),
-            ButtonImage::LayerToggleIcon(target, _) => Some(target),
-            _ => None,
+            _ => self.toggle_target.as_deref(),
         }
     }
     fn is_visible(&self, sysinfo_mgr: Option<&SystemInfoManager>) -> bool {
@@ -1316,6 +1419,7 @@ pub struct FunctionLayer {
     displays_battery: bool,
     displays_sysinfo: bool,
     displays_slider: bool,
+    displays_weather: bool,
     buttons: Vec<(usize, Button)>,
     virtual_button_count: usize,
     faster_refresh: bool,
@@ -1334,6 +1438,7 @@ impl FunctionLayer {
             cfg.cpu_usage || cfg.memory_usage || cfg.active_window || cfg.active_workspace
         });
         let displays_slider = cfg.iter().any(|cfg| cfg.slider.is_some());
+        let displays_weather = cfg.iter().any(|cfg| cfg.weather.is_some());
         let buttons = cfg
             .into_iter()
             .scan(&mut virtual_button_count, |state, cfg| {
@@ -1354,6 +1459,7 @@ impl FunctionLayer {
             displays_battery,
             displays_sysinfo,
             displays_slider,
+            displays_weather,
             buttons,
             virtual_button_count,
             faster_refresh,
@@ -1368,6 +1474,7 @@ impl FunctionLayer {
         pixel_shift: (f64, f64),
         complete_redraw: bool,
         sysinfo_mgr: Option<&SystemInfoManager>,
+        weather_mgr: Option<&WeatherManager>,
     ) -> Vec<ClipRect> {
         let c = Context::new(surface).unwrap();
         let mut modified_regions = if complete_redraw {
@@ -1490,6 +1597,7 @@ impl FunctionLayer {
                     button_width.ceil() as u64,
                     pixel_shift_y,
                     sysinfo_mgr,
+                    weather_mgr,
                 );
             }
 
@@ -1731,6 +1839,7 @@ fn real_main(drm: &mut DrmBackend) {
     let (mut cfg, mut layers) = cfg_mgr.load_config(width);
     let mut pixel_shift = PixelShiftManager::new();
     let sysinfo_mgr = SystemInfoManager::new();
+    let weather_mgr = WeatherManager::new(cfg.weather_location.clone(), cfg.weather_fahrenheit);
     let mut last = Instant::now();
 
     if cfg.drop_privileges {
@@ -1862,6 +1971,17 @@ fn real_main(drm: &mut DrmBackend) {
             next_timeout_ms = min(next_timeout_ms, SLIDER_REFRESH_MS);
         }
 
+        if layers[active_layer].displays_weather {
+            for button in &mut layers[active_layer].buttons {
+                if matches!(
+                    button.1.image,
+                    ButtonImage::WeatherCurrent | ButtonImage::WeatherForecast(_)
+                ) {
+                    button.1.changed = true;
+                }
+            }
+        }
+
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
             let shift = if cfg.enable_pixel_shift {
                 pixel_shift.get()
@@ -1873,6 +1993,11 @@ fn real_main(drm: &mut DrmBackend) {
             } else {
                 None
             };
+            let weather_mgr_ref = if layers[active_layer].displays_weather {
+                Some(&weather_mgr)
+            } else {
+                None
+            };
             let clips = layers[active_layer].draw(
                 &cfg,
                 width as i32,
@@ -1881,6 +2006,7 @@ fn real_main(drm: &mut DrmBackend) {
                 shift,
                 needs_complete_redraw,
                 sysinfo_mgr_ref,
+                weather_mgr_ref,
             );
             let data = surface.data().unwrap();
             drm.map().unwrap().as_mut()[..data.len()].copy_from_slice(&data);
