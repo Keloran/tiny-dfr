@@ -19,11 +19,26 @@ pub struct DayForecast {
 #[derive(Clone, Default)]
 pub struct WeatherData {
     pub available: bool,
-    pub city: String,
     pub current_temp: Option<f64>,
-    pub current_desc: String,
+    pub current_icon: String,
     pub unit: String,
     pub days: Vec<DayForecast>,
+}
+
+/// Map a wttr.in (WWO) weather code to one of our icon file names. Clear skies
+/// resolve to sunny here; the caller swaps in the moon icon at night.
+fn weather_icon_name(code: i64) -> &'static str {
+    match code {
+        113 => "weather_sunny",
+        // rain, drizzle, showers, thunder
+        176 | 200 | 263 | 266 | 281 | 284 | 293 | 296 | 299 | 302 | 305 | 308 | 311 | 314
+        | 353 | 356 | 359 | 386 | 389 | 392 | 395 => "weather_rainy",
+        // snow, sleet, freezing
+        179 | 182 | 185 | 227 | 230 | 317 | 320 | 323 | 326 | 329 | 332 | 335 | 338 | 350
+        | 362 | 365 | 368 | 371 | 374 | 377 => "weather_snowy",
+        // partly cloudy, cloudy, overcast, fog, mist, anything else
+        _ => "weather_cloudy",
+    }
 }
 
 pub struct WeatherManager {
@@ -101,19 +116,17 @@ fn fetch_weather(location: &Option<String>, fahrenheit: bool) -> Option<WeatherD
         .get(temp_key)
         .and_then(|t| t.as_str())
         .and_then(|s| s.parse::<f64>().ok());
-    let current_desc = desc_value(current).unwrap_or_default();
+    let current_code = current
+        .get("weatherCode")
+        .and_then(|c| c.as_str())
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(-1);
 
-    let city = v
-        .get("nearest_area")
-        .and_then(|a| a.as_array())
-        .and_then(|a| a.first())
-        .and_then(|x| x.get("areaName"))
-        .and_then(|a| a.as_array())
-        .and_then(|a| a.first())
-        .and_then(|x| x.get("value"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    // Clear skies show the moon at night.
+    let mut current_icon = weather_icon_name(current_code).to_string();
+    if current_code == 113 && is_night(&v) {
+        current_icon = "weather_moon".to_string();
+    }
 
     let mut days = Vec::new();
     if let Some(weather) = v.get("weather").and_then(|w| w.as_array()) {
@@ -144,12 +157,40 @@ fn fetch_weather(location: &Option<String>, fahrenheit: bool) -> Option<WeatherD
 
     Some(WeatherData {
         available: true,
-        city,
         current_temp,
-        current_desc,
+        current_icon,
         unit: if fahrenheit { "°F" } else { "°C" }.to_string(),
         days,
     })
+}
+
+/// Determine whether it is currently night at the location, using today's
+/// sunrise/sunset from the wttr.in astronomy block (same approach as the
+/// omarchy weather icon).
+fn is_night(v: &Value) -> bool {
+    let astronomy = v
+        .get("weather")
+        .and_then(|w| w.as_array())
+        .and_then(|w| w.first())
+        .and_then(|d| d.get("astronomy"))
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first());
+    let Some(astronomy) = astronomy else {
+        return false;
+    };
+    let parse = |key: &str| {
+        astronomy
+            .get(key)
+            .and_then(|t| t.as_str())
+            .and_then(|s| chrono::NaiveTime::parse_from_str(s.trim(), "%I:%M %p").ok())
+    };
+    match (parse("sunrise"), parse("sunset")) {
+        (Some(sunrise), Some(sunset)) => {
+            let now = chrono::Local::now().time();
+            now < sunrise || now >= sunset
+        }
+        _ => false,
+    }
 }
 
 fn desc_value(node: &Value) -> Option<String> {
