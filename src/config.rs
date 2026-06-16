@@ -1,6 +1,5 @@
 use crate::fonts::{FontConfig, Pattern};
 use crate::FunctionLayer;
-use anyhow::Error;
 use cairo::FontFace;
 use freetype::Library as FtLibrary;
 use input_linux::Key;
@@ -12,9 +11,10 @@ use serde::{
     de::{self, Visitor},
     Deserialize, Deserializer,
 };
-use std::{collections::BTreeMap, fmt, fs::read_to_string, os::fd::AsFd};
+use std::{collections::BTreeMap, env, fmt, fs::read_to_string, os::fd::AsFd, path::PathBuf};
 
-const USER_CFG_PATH: &str = "/etc/tiny-dfr/config.toml";
+const DEFAULT_CFG_PATH: &str = "/usr/share/tiny-dfr/config.toml";
+const SYSTEM_CFG_PATH: &str = "/etc/tiny-dfr/config.toml";
 
 pub struct Config {
     pub default_layer: String,
@@ -46,6 +46,32 @@ struct ConfigProxy {
     system_info_layer_keys: Option<Vec<ButtonConfig>>,
     media_layer_keys: Option<Vec<ButtonConfig>>,
     layers: Option<BTreeMap<String, Vec<ButtonConfig>>>,
+}
+
+impl ConfigProxy {
+    fn merge(&mut self, other: ConfigProxy) {
+        self.default_layer = other.default_layer.or(self.default_layer.take());
+        self.show_button_outlines = other.show_button_outlines.or(self.show_button_outlines);
+        self.enable_pixel_shift = other.enable_pixel_shift.or(self.enable_pixel_shift);
+        self.font_template = other.font_template.or(self.font_template.take());
+        self.font_size = other.font_size.or(self.font_size);
+        self.adaptive_brightness = other.adaptive_brightness.or(self.adaptive_brightness);
+        self.active_brightness = other.active_brightness.or(self.active_brightness);
+        self.double_press_switch_layers = other
+            .double_press_switch_layers
+            .or(self.double_press_switch_layers);
+        self.auto_add_esc_key = other.auto_add_esc_key.or(self.auto_add_esc_key);
+        self.show_esc_key = other.show_esc_key.or(self.show_esc_key);
+        self.drop_privileges = other.drop_privileges.or(self.drop_privileges);
+        self.primary_layer_keys = other.primary_layer_keys.or(self.primary_layer_keys.take());
+        self.system_info_layer_keys = other
+            .system_info_layer_keys
+            .or(self.system_info_layer_keys.take());
+        self.media_layer_keys = other.media_layer_keys.or(self.media_layer_keys.take());
+        if let Some(layers) = other.layers {
+            self.layers.get_or_insert_with(BTreeMap::new).extend(layers);
+        }
+    }
 }
 
 fn array_or_single<'de, D>(deserializer: D) -> Result<Vec<Key>, D::Error>
@@ -121,32 +147,34 @@ fn load_font(name: &str) -> FontFace {
     FontFace::create_from_ft(&face).unwrap()
 }
 
+fn user_config_path() -> Option<PathBuf> {
+    if let Some(config_home) = env::var_os("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(config_home).join("tiny-dfr/config.toml"));
+    }
+
+    env::var_os("HOME").map(|home| PathBuf::from(home).join(".config/tiny-dfr/config.toml"))
+}
+
+fn config_paths() -> Vec<PathBuf> {
+    let mut paths = vec![PathBuf::from(SYSTEM_CFG_PATH)];
+    if let Some(user_path) = user_config_path() {
+        paths.push(user_path);
+    }
+    paths
+}
+
 fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
-    let mut base =
-        toml::from_str::<ConfigProxy>(&read_to_string("/usr/share/tiny-dfr/config.toml").unwrap())
-            .unwrap();
-    let user = read_to_string(USER_CFG_PATH)
-        .map_err::<Error, _>(|e| e.into())
-        .and_then(|r| Ok(toml::from_str::<ConfigProxy>(&r)?));
-    if let Ok(user) = user {
-        base.default_layer = user.default_layer.or(base.default_layer);
-        base.show_button_outlines = user.show_button_outlines.or(base.show_button_outlines);
-        base.enable_pixel_shift = user.enable_pixel_shift.or(base.enable_pixel_shift);
-        base.font_template = user.font_template.or(base.font_template);
-        base.font_size = user.font_size.or(base.font_size);
-        base.adaptive_brightness = user.adaptive_brightness.or(base.adaptive_brightness);
-        base.system_info_layer_keys = user.system_info_layer_keys.or(base.system_info_layer_keys);
-        base.primary_layer_keys = user.primary_layer_keys.or(base.primary_layer_keys);
-        base.media_layer_keys = user.media_layer_keys.or(base.media_layer_keys);
-        if let Some(user_layers) = user.layers {
-            base.layers.get_or_insert_with(BTreeMap::new).extend(user_layers);
+    let mut base = toml::from_str::<ConfigProxy>(&read_to_string(DEFAULT_CFG_PATH).unwrap()).unwrap();
+    for path in config_paths() {
+        match read_to_string(&path).and_then(|contents| {
+            toml::from_str::<ConfigProxy>(&contents)
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
+        }) {
+            Ok(config) => base.merge(config),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => eprintln!("Failed to load config {}: {err}", path.display()),
         }
-        base.active_brightness = user.active_brightness.or(base.active_brightness);
-        base.double_press_switch_layers = user.double_press_switch_layers.or(base.double_press_switch_layers);
-        base.auto_add_esc_key = user.auto_add_esc_key.or(base.auto_add_esc_key);
-        base.show_esc_key = user.show_esc_key.or(base.show_esc_key);
-        base.drop_privileges = user.drop_privileges.or(base.drop_privileges);
-    };
+    }
     let mut primary_layer_keys = base.primary_layer_keys.unwrap();
     
     // Handle configs with only old-style MediaLayerKeys (no SystemInfoLayerKeys)
@@ -231,25 +259,28 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
 
 pub struct ConfigManager {
     inotify_fd: Inotify,
-    watch_desc: Option<WatchDescriptor>,
+    watch_descs: Vec<WatchDescriptor>,
 }
 
-fn arm_inotify(inotify_fd: &Inotify) -> Option<WatchDescriptor> {
+fn arm_inotify(inotify_fd: &Inotify) -> Vec<WatchDescriptor> {
     let flags = AddWatchFlags::IN_MOVED_TO | AddWatchFlags::IN_CLOSE | AddWatchFlags::IN_ONESHOT;
-    match inotify_fd.add_watch(USER_CFG_PATH, flags) {
-        Ok(wd) => Some(wd),
-        Err(Errno::ENOENT) => None,
-        e => Some(e.unwrap()),
-    }
+    config_paths()
+        .into_iter()
+        .filter_map(|path| match inotify_fd.add_watch(&path, flags) {
+            Ok(wd) => Some(wd),
+            Err(Errno::ENOENT) => None,
+            e => Some(e.unwrap()),
+        })
+        .collect()
 }
 
 impl ConfigManager {
     pub fn new() -> ConfigManager {
         let inotify_fd = Inotify::init(InitFlags::IN_NONBLOCK).unwrap();
-        let watch_desc = arm_inotify(&inotify_fd);
+        let watch_descs = arm_inotify(&inotify_fd);
         ConfigManager {
             inotify_fd,
-            watch_desc,
+            watch_descs,
         }
     }
     pub fn load_config(&self, width: u16) -> (Config, Vec<FunctionLayer>) {
@@ -261,8 +292,8 @@ impl ConfigManager {
         layers: &mut Vec<FunctionLayer>,
         width: u16,
     ) -> bool {
-        if self.watch_desc.is_none() {
-            self.watch_desc = arm_inotify(&self.inotify_fd);
+        if self.watch_descs.is_empty() {
+            self.watch_descs = arm_inotify(&self.inotify_fd);
             return false;
         }
         match self.inotify_fd.read_events() {
@@ -274,14 +305,14 @@ impl ConfigManager {
     fn handle_events(&mut self, cfg: &mut Config, layers: &mut Vec<FunctionLayer>, width: u16, evts: Result<Vec<InotifyEvent>, Errno>) -> bool {
         let mut ret = false;
         for evt in evts.unwrap() {
-            if Some(evt.wd) != self.watch_desc {
+            if !self.watch_descs.iter().any(|wd| *wd == evt.wd) {
                 continue;
             }
             let parts = load_config(width);
             *cfg = parts.0;
             *layers = parts.1;
             ret = true;
-            self.watch_desc = arm_inotify(&self.inotify_fd);
+            self.watch_descs = arm_inotify(&self.inotify_fd);
         }
         ret
     }
