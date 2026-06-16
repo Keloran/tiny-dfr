@@ -196,21 +196,46 @@ MediaLayerKeys = [
     # { Icon = "audio-volume-high",    Theme = "breeze-dark", Action = "VolumeUp"       }
 ]
 
-# Extra named layers can be added with array-of-tables syntax. LayerToggle targets
-# the human-readable layer name, so this button switches to Weather:
+# Weather buttons fetch from wttr.in (the same source the omarchy/waybar weather
+# module uses), which auto-detects your location by IP and provides a 3-day
+# forecast. Optional settings:
+#   WeatherLocation = "London"   # city or "lat,lon"; omit to auto-detect by IP
+#   WeatherUnits = "celsius"     # or "fahrenheit"
+#
+# A "current" weather button shows the condition + temperature and can also act
+# as a LayerToggle (any button may combine content with a LayerToggle). The
+# "forecast" buttons each show one day (WeatherDay 0 = today) and have no action.
 #
 # [[SystemInfoLayerKeys]]
-# Icon = "weather"
+# Weather = "current"
 # LayerToggle = "Weather"
 # Action = []
+# Stretch = 2
+# Stacked = true
 #
 # [[Layers.Weather]]
-# Text = "Back"
+# Text = "<-"
 # LayerToggle = "SystemInfo"
 # Action = []
 # Stretch = 1
 #
 # [[Layers.Weather]]
-# Text = "Mon 18C"
+# Weather = "forecast"
+# WeatherDay = 0
 # Action = []
 # Stretch = 2
+# Stacked = true
+#
+# [[Layers.Weather]]
+# Weather = "forecast"
+# WeatherDay = 1
+# Action = []
+# Stretch = 2
+# Stacked = true
+#
+# [[Layers.Weather]]
+# Weather = "forecast"
+# WeatherDay = 2
+# Action = []
+# Stretch = 2
+# Stacked = true
