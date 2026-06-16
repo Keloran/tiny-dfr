@@ -11,6 +11,7 @@ const RETRY_REFRESH: Duration = Duration::from_secs(60);
 #[derive(Clone)]
 pub struct DayForecast {
     pub weekday: String,
+    pub icon: String,
     pub desc: String,
     pub tmax: f64,
     pub tmin: f64,
@@ -135,7 +136,7 @@ fn fetch_weather(location: &Option<String>, fahrenheit: bool) -> Option<WeatherD
             let tmax = parse_temp(day.get(max_key));
             let tmin = parse_temp(day.get(min_key));
             // Representative condition: the midday hourly slot if present.
-            let desc = day
+            let noon = day
                 .get("hourly")
                 .and_then(|h| h.as_array())
                 .and_then(|hours| {
@@ -143,11 +144,16 @@ fn fetch_weather(location: &Option<String>, fahrenheit: bool) -> Option<WeatherD
                         .iter()
                         .find(|h| h.get("time").and_then(|t| t.as_str()) == Some("1200"))
                         .or_else(|| hours.get(hours.len() / 2))
-                })
-                .and_then(desc_value)
-                .unwrap_or_default();
+                });
+            let code = noon
+                .and_then(|h| h.get("weatherCode"))
+                .and_then(|c| c.as_str())
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(-1);
+            let desc = noon.and_then(desc_value).unwrap_or_default();
             days.push(DayForecast {
                 weekday: weekday_abbrev(date),
+                icon: weather_icon_name(code).to_string(),
                 desc,
                 tmax,
                 tmin,

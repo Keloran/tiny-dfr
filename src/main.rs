@@ -147,7 +147,7 @@ enum ButtonImage {
         muted_icon: Option<Handle>,
     },
     WeatherCurrent(WeatherIcons),
-    WeatherForecast(usize),
+    WeatherForecast(usize, WeatherIcons),
     Spacer,
 }
 
@@ -183,11 +183,13 @@ enum ButtonContent {
         icon_size: f64,
         text: String,
     },
-    // Icon + multiple lines of text (always stacked)
+    // Icon + multiple lines of text (always stacked).
+    // emphasize_first renders the first line 2pt larger (used for the weekday).
     IconWithMultilineText {
         icon: Handle,
         icon_size: f64,
         lines: Vec<String>,
+        emphasize_first: bool,
     },
     // Clipped text (for window titles that might overflow)
     ClippedText(String),
@@ -273,6 +275,7 @@ impl Button {
                             icon: icon_handle.clone(),
                             icon_size: DEFAULT_ICON_SIZE as f64,
                             lines,
+                            emphasize_first: false,
                         }
                     } else {
                         ButtonContent::SimpleText(lines.join(" "))
@@ -331,6 +334,7 @@ impl Button {
                                 icon: svg.clone(),
                                 icon_size: self.icon_width.min(self.icon_height),
                                 lines,
+                                emphasize_first: false,
                             }
                         } else {
                             let mem_text = format!(
@@ -420,23 +424,34 @@ impl Button {
                     ButtonContent::Empty
                 }
             }
-            ButtonImage::WeatherForecast(day) => {
+            ButtonImage::WeatherForecast(day, icons) => {
                 if let Some(mgr) = weather_mgr {
                     let d = mgr.data();
                     if let Some(forecast) = d.days.get(*day) {
-                        let mut lines = vec![format!(
+                        let temps = format!(
                             "{}/{}{}",
                             forecast.tmax.round() as i64,
                             forecast.tmin.round() as i64,
                             d.unit
-                        )];
+                        );
+                        let mut lines = Vec::new();
                         if !forecast.weekday.is_empty() {
-                            lines.insert(0, forecast.weekday.clone());
+                            lines.push(forecast.weekday.clone());
                         }
+                        lines.push(temps);
                         if !forecast.desc.is_empty() {
                             lines.push(forecast.desc.clone());
                         }
-                        ButtonContent::MultilineText(lines)
+                        if let Some(icon) = icons.pick(&forecast.icon) {
+                            ButtonContent::IconWithMultilineText {
+                                icon,
+                                icon_size: DEFAULT_ICON_SIZE as f64,
+                                lines,
+                                emphasize_first: true,
+                            }
+                        } else {
+                            ButtonContent::MultilineText(lines)
+                        }
                     } else {
                         ButtonContent::SimpleText("--".to_string())
                     }
@@ -516,9 +531,20 @@ impl Button {
                     c.show_text(&text).unwrap();
                 }
             }
-            ButtonContent::IconWithMultilineText { icon, icon_size, lines } => {
+            ButtonContent::IconWithMultilineText { icon, icon_size, lines, emphasize_first } => {
                 let spacing = 4.0;
                 let text_spacing = 2.0;
+                // The current font size (from global or per-button config) is already
+                // set on the context; optionally render the first line (the weekday)
+                // 2pt larger so it's easier to read.
+                let base_font_size = c.font_matrix().xx();
+                let line_size = |i: usize| {
+                    if emphasize_first && i == 0 {
+                        base_font_size + 2.0
+                    } else {
+                        base_font_size
+                    }
+                };
 
                 // Measure all lines
                 let mut line_extents = Vec::new();
@@ -526,6 +552,7 @@ impl Button {
                 let mut total_height: f64 = 0.0;
 
                 for (i, line) in lines.iter().enumerate() {
+                    c.set_font_size(line_size(i));
                     let extents = c.text_extents(line).unwrap();
                     max_width = max_width.max(extents.width());
                     total_height += extents.height();
@@ -549,12 +576,14 @@ impl Button {
 
                 let mut current_y = text_start_y;
                 for (i, (line, extents)) in lines.iter().zip(line_extents.iter()).enumerate() {
+                    c.set_font_size(line_size(i));
                     c.move_to(text_x, current_y + extents.height());
                     c.show_text(line).unwrap();
                     if i < lines.len() - 1 {
                         current_y += extents.height() + text_spacing;
                     }
                 }
+                c.set_font_size(base_font_size);
             }
             ButtonContent::ClippedText(text) => {
                 let extents = c.text_extents(&text).unwrap();
@@ -853,7 +882,9 @@ impl Button {
         } else if let Some(weather) = cfg.weather {
             match weather.as_str() {
                 "current" => Button::new_weather_current(cfg.theme.as_deref()),
-                "forecast" => Button::new_weather_forecast(cfg.weather_day.unwrap_or(0)),
+                "forecast" => {
+                    Button::new_weather_forecast(cfg.weather_day.unwrap_or(0), cfg.theme.as_deref())
+                }
                 _ => {
                     eprintln!("Unknown Weather kind '{}'; expected current or forecast", weather);
                     Button::new_spacer()
@@ -965,12 +996,12 @@ impl Button {
             toggle_target: None,
         }
     }
-    fn new_weather_forecast(day: usize) -> Button {
+    fn new_weather_forecast(day: usize, theme: Option<&str>) -> Button {
         Button {
             action: vec![],
             active: false,
             changed: false,
-            image: ButtonImage::WeatherForecast(day),
+            image: ButtonImage::WeatherForecast(day, WeatherIcons::load(theme)),
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
@@ -1999,7 +2030,7 @@ fn real_main(drm: &mut DrmBackend) {
             for button in &mut layers[active_layer].buttons {
                 if matches!(
                     button.1.image,
-                    ButtonImage::WeatherCurrent(_) | ButtonImage::WeatherForecast(_)
+                    ButtonImage::WeatherCurrent(_) | ButtonImage::WeatherForecast(_, _)
                 ) {
                     button.1.changed = true;
                 }
