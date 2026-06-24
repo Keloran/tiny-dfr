@@ -1,7 +1,6 @@
 use crate::backlight::{find_display_backlight, find_keyboard_backlight};
 use std::{
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::{Child, Command},
     time::{Duration, Instant},
@@ -215,7 +214,9 @@ fn query_volume() -> Option<(f64, bool)> {
     // Output looks like "Volume: 0.42" or "Volume: 0.42 [MUTED]".
     let s = String::from_utf8_lossy(&out.stdout);
     let muted = s.contains("[MUTED]");
-    let frac = s.split_whitespace().find_map(|tok| tok.parse::<f64>().ok())?;
+    let frac = s
+        .split_whitespace()
+        .find_map(|tok| tok.parse::<f64>().ok())?;
     Some((frac.min(1.0), muted))
 }
 
@@ -224,7 +225,11 @@ fn query_volume() -> Option<(f64, bool)> {
 pub fn user_command(cmd_str: &str) -> Command {
     let mut command = if let Ok(sudo_user) = env::var("SUDO_USER") {
         let mut cmd = Command::new("sudo");
-        cmd.arg("-u").arg(&sudo_user).arg("sh").arg("-c").arg(cmd_str);
+        cmd.arg("-u")
+            .arg(&sudo_user)
+            .arg("sh")
+            .arg("-c")
+            .arg(cmd_str);
         cmd
     } else {
         let mut cmd = Command::new("sh");

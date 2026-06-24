@@ -173,7 +173,8 @@ fn config_paths() -> Vec<PathBuf> {
 }
 
 fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
-    let mut base = toml::from_str::<ConfigProxy>(&read_to_string(DEFAULT_CFG_PATH).unwrap()).unwrap();
+    let mut base =
+        toml::from_str::<ConfigProxy>(&read_to_string(DEFAULT_CFG_PATH).unwrap()).unwrap();
     for path in config_paths() {
         match read_to_string(&path).and_then(|contents| {
             toml::from_str::<ConfigProxy>(&contents)
@@ -185,19 +186,26 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
         }
     }
     let mut primary_layer_keys = base.primary_layer_keys.unwrap();
-    
+
     // Handle configs with only old-style MediaLayerKeys (no SystemInfoLayerKeys)
-    let (mut system_info_layer_keys, mut media_layer_keys) = match (base.system_info_layer_keys, base.media_layer_keys) {
-        (Some(sysinfo), Some(media)) => (sysinfo, media),
-        (Some(sysinfo), None) => (sysinfo.clone(), sysinfo), // SystemInfo exists, use it for both
-        (None, Some(media)) => (media.clone(), media), // Only MediaLayerKeys, use it for both (old config)
-        (None, None) => panic!("Config must have either SystemInfoLayerKeys or MediaLayerKeys defined"),
-    };
+    let (mut system_info_layer_keys, mut media_layer_keys) =
+        match (base.system_info_layer_keys, base.media_layer_keys) {
+            (Some(sysinfo), Some(media)) => (sysinfo, media),
+            (Some(sysinfo), None) => (sysinfo.clone(), sysinfo), // SystemInfo exists, use it for both
+            (None, Some(media)) => (media.clone(), media), // Only MediaLayerKeys, use it for both (old config)
+            (None, None) => {
+                panic!("Config must have either SystemInfoLayerKeys or MediaLayerKeys defined")
+            }
+        };
     let show_esc = base
         .show_esc_key
         .unwrap_or_else(|| width >= 2170 && base.auto_add_esc_key.unwrap_or(true));
     if show_esc {
-        for layer in [&mut system_info_layer_keys, &mut primary_layer_keys, &mut media_layer_keys] {
+        for layer in [
+            &mut system_info_layer_keys,
+            &mut primary_layer_keys,
+            &mut media_layer_keys,
+        ] {
             layer.insert(
                 0,
                 ButtonConfig {
@@ -241,7 +249,10 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
                     "Media" => "MediaLayerKeys",
                     _ => unreachable!(),
                 };
-                eprintln!("Warning: Layers.{} ignored; use {} for built-in layers", name, key_name);
+                eprintln!(
+                    "Warning: Layers.{} ignored; use {} for built-in layers",
+                    name, key_name
+                );
                 continue;
             }
             layers.push(FunctionLayer::with_config(name, keys));
@@ -249,7 +260,10 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
     }
     let default_layer = base.default_layer.as_deref().unwrap_or("SystemInfo");
     if !layers.iter().any(|layer| layer.name == default_layer) {
-        eprintln!("Warning: Invalid DefaultLayer '{}', using SystemInfo", default_layer);
+        eprintln!(
+            "Warning: Invalid DefaultLayer '{}', using SystemInfo",
+            default_layer
+        );
     }
     let cfg = Config {
         default_layer: if layers.iter().any(|layer| layer.name == default_layer) {
@@ -268,7 +282,12 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
         weather_location: base.weather_location,
         weather_fahrenheit: base
             .weather_units
-            .map(|u| matches!(u.to_ascii_lowercase().as_str(), "fahrenheit" | "imperial" | "f"))
+            .map(|u| {
+                matches!(
+                    u.to_ascii_lowercase().as_str(),
+                    "fahrenheit" | "imperial" | "f"
+                )
+            })
             .unwrap_or(false),
     };
     (cfg, layers)
@@ -319,7 +338,13 @@ impl ConfigManager {
         }
     }
     #[cold]
-    fn handle_events(&mut self, cfg: &mut Config, layers: &mut Vec<FunctionLayer>, width: u16, evts: Result<Vec<InotifyEvent>, Errno>) -> bool {
+    fn handle_events(
+        &mut self,
+        cfg: &mut Config,
+        layers: &mut Vec<FunctionLayer>,
+        width: u16,
+        evts: Result<Vec<InotifyEvent>, Errno>,
+    ) -> bool {
         let mut ret = false;
         for evt in evts.unwrap() {
             if !self.watch_descs.iter().any(|wd| *wd == evt.wd) {
