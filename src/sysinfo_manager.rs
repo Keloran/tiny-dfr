@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
+use std::os::unix::{fs::MetadataExt, net::UnixStream};
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -77,10 +77,14 @@ fn setup_hyprland_env() -> Option<String> {
 }
 
 fn current_desktop_contains(name: &str) -> bool {
-    ["XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "DESKTOP_SESSION"]
-        .iter()
-        .filter_map(|key| env::var(key).ok())
-        .any(|value| value.to_ascii_lowercase().contains(name))
+    [
+        "XDG_CURRENT_DESKTOP",
+        "XDG_SESSION_DESKTOP",
+        "DESKTOP_SESSION",
+    ]
+    .iter()
+    .filter_map(|key| env::var(key).ok())
+    .any(|value| value.to_ascii_lowercase().contains(name))
 }
 
 fn is_cosmic_session() -> bool {
@@ -102,6 +106,43 @@ fn process_running(process_name: &str) -> bool {
             .map(|comm| comm.trim().eq_ignore_ascii_case(process_name))
             .unwrap_or(false)
     })
+}
+
+fn process_uid(process_name: &str) -> Option<u32> {
+    let procs = fs::read_dir("/proc").ok()?;
+
+    for proc_entry in procs.flatten() {
+        let pid = proc_entry.file_name();
+        if !pid.to_string_lossy().chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+
+        let comm = fs::read_to_string(proc_entry.path().join("comm")).unwrap_or_default();
+        if comm.trim().eq_ignore_ascii_case(process_name) {
+            return proc_entry.metadata().ok().map(|metadata| metadata.uid());
+        }
+    }
+
+    None
+}
+
+fn username_for_uid(uid: u32) -> Option<String> {
+    let passwd = fs::read_to_string("/etc/passwd").ok()?;
+
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        let username = fields.next()?;
+        fields.next()?;
+        let entry_uid = fields.next()?.parse::<u32>().ok()?;
+        (entry_uid == uid).then(|| username.to_string())
+    })
+}
+
+pub fn desktop_user() -> Option<String> {
+    env::var("SUDO_USER")
+        .ok()
+        .or_else(|| process_uid("cosmic-comp").and_then(username_for_uid))
+        .or_else(|| process_uid("Hyprland").and_then(username_for_uid))
 }
 
 fn set_hyprland_env(runtime_dir: &str, signature: &str) {
@@ -288,6 +329,15 @@ fn setup_cosmic_env() {
 
     if let Ok(sudo_uid) = env::var("SUDO_UID") {
         let runtime_dir = format!("/run/user/{sudo_uid}");
+        if let Some(display) = detect_wayland_display(&runtime_dir) {
+            env::set_var("XDG_RUNTIME_DIR", runtime_dir);
+            env::set_var("WAYLAND_DISPLAY", display);
+            return;
+        }
+    }
+
+    if let Some(uid) = process_uid("cosmic-comp") {
+        let runtime_dir = format!("/run/user/{uid}");
         if let Some(display) = detect_wayland_display(&runtime_dir) {
             env::set_var("XDG_RUNTIME_DIR", runtime_dir);
             env::set_var("WAYLAND_DISPLAY", display);

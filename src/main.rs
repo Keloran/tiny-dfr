@@ -1975,20 +1975,23 @@ fn real_main(drm: &mut DrmBackend) {
     let mut cfg_mgr = ConfigManager::new();
     let (mut cfg, mut layers) = cfg_mgr.load_config(width);
     let mut pixel_shift = PixelShiftManager::new();
-    let sysinfo_mgr = SystemInfoManager::new();
     let weather_mgr = WeatherManager::new(cfg.weather_location.clone(), cfg.weather_fahrenheit);
     let mut last = Instant::now();
 
     if cfg.drop_privileges {
-        // drop privileges to input and video group
+        // Drop privileges after opening devices. Use the desktop user when
+        // available so Wayland compositors accept desktop-info IPC clients.
         let groups = ["input", "video"];
+        let user = sysinfo_manager::desktop_user().unwrap_or_else(|| "nobody".to_string());
 
         PrivDrop::default()
-            .user("nobody")
+            .user(&user)
             .group_list(&groups)
             .apply()
             .unwrap_or_else(|e| panic!("Failed to drop privileges: {}", e));
     }
+
+    let sysinfo_mgr = SystemInfoManager::new();
 
     let mut surface =
         ImageSurface::create(Format::ARgb32, db_width as i32, db_height as i32).unwrap();
