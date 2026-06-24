@@ -33,16 +33,17 @@ RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 # Allow reading ~/.config/tiny-dfr/config.toml while still blocking home writes.
 ProtectHome=read-only
 
-# Allow reading /proc to detect Hyprland process environment
+# Allow reading /proc to detect Hyprland/Cosmic process environments
 ProtectProc=default
 
-# Explicitly allow access to /run for Hyprland socket detection and app launching
+# Explicitly allow access to /run for Hyprland/Cosmic Wayland socket detection
+# and app launching.
 ReadWritePaths=/run /run/user
 
-# Note: PrivateIPC and PrivateTmp are disabled to allow Hyprland communication
+# Note: PrivateIPC and PrivateTmp are disabled to allow desktop IPC communication
 # PrivateIPC=true would create an isolated IPC namespace
 # PrivateTmp=true would create an isolated /tmp
-# These can be re-enabled if Hyprland features are not needed
+# These can be re-enabled if Hyprland/Cosmic features are not needed
 
 [Install]
 WantedBy=multi-user.target

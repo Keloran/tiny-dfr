@@ -32,11 +32,11 @@ fn weather_icon_name(code: i64) -> &'static str {
     match code {
         113 => "weather_sunny",
         // rain, drizzle, showers, thunder
-        176 | 200 | 263 | 266 | 281 | 284 | 293 | 296 | 299 | 302 | 305 | 308 | 311 | 314
-        | 353 | 356 | 359 | 386 | 389 | 392 | 395 => "weather_rainy",
+        176 | 200 | 263 | 266 | 281 | 284 | 293 | 296 | 299 | 302 | 305 | 308 | 311 | 314 | 353
+        | 356 | 359 | 386 | 389 | 392 | 395 => "weather_rainy",
         // snow, sleet, freezing
-        179 | 182 | 185 | 227 | 230 | 317 | 320 | 323 | 326 | 329 | 332 | 335 | 338 | 350
-        | 362 | 365 | 368 | 371 | 374 | 377 => "weather_snowy",
+        179 | 182 | 185 | 227 | 230 | 317 | 320 | 323 | 326 | 329 | 332 | 335 | 338 | 350 | 362
+        | 365 | 368 | 371 | 374 | 377 => "weather_snowy",
         // partly cloudy, cloudy, overcast, fog, mist, anything else
         _ => "weather_cloudy",
     }
@@ -66,8 +66,7 @@ impl WeatherManager {
                         }
                         None => false,
                     };
-                    next_fetch = Instant::now()
-                        + if ok { WEATHER_REFRESH } else { RETRY_REFRESH };
+                    next_fetch = Instant::now() + if ok { WEATHER_REFRESH } else { RETRY_REFRESH };
                 }
                 thread::sleep(Duration::from_secs(5));
             }

@@ -286,7 +286,7 @@ impl Button {
                     } else {
                         vec![percent_str, profile_str]
                     };
-                    
+
                     if let Some(icon_handle) = icon {
                         ButtonContent::IconWithMultilineText {
                             icon: icon_handle.clone(),
@@ -512,14 +512,19 @@ impl Button {
                 c.rectangle(x, y, width, height_img);
                 c.fill().unwrap();
             }
-            ButtonContent::IconWithText { icon, icon_size, text } => {
+            ButtonContent::IconWithText {
+                icon,
+                icon_size,
+                text,
+            } => {
                 let extents = c.text_extents(&text).unwrap();
                 let spacing = 4.0;
 
                 if self.stacked {
                     // Stacked: icon on left, text on right
                     let total_width = icon_size + spacing + extents.width();
-                    let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+                    let start_x =
+                        button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
 
                     // Icon vertically centered
                     let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
@@ -535,7 +540,8 @@ impl Button {
                 } else {
                     // Horizontal: same layout
                     let total_width = icon_size + spacing + extents.width();
-                    let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+                    let start_x =
+                        button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
 
                     let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
                     icon.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
@@ -548,7 +554,12 @@ impl Button {
                     c.show_text(&text).unwrap();
                 }
             }
-            ButtonContent::IconWithMultilineText { icon, icon_size, lines, emphasize_first } => {
+            ButtonContent::IconWithMultilineText {
+                icon,
+                icon_size,
+                lines,
+                emphasize_first,
+            } => {
                 let spacing = 4.0;
                 let text_spacing = 2.0;
                 // The current font size (from global or per-button config) is already
@@ -580,7 +591,8 @@ impl Button {
                 }
 
                 let total_width = icon_size + spacing + max_width;
-                let start_x = button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+                let start_x =
+                    button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
 
                 // Icon vertically centered
                 let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
@@ -607,7 +619,12 @@ impl Button {
 
                 // Save context and set up clipping
                 c.save().unwrap();
-                c.rectangle(button_left_edge, y_shift, button_width as f64, height as f64);
+                c.rectangle(
+                    button_left_edge,
+                    y_shift,
+                    button_width as f64,
+                    height as f64,
+                );
                 c.clip();
 
                 c.move_to(
@@ -632,8 +649,7 @@ impl Button {
                     line_extents.push(extents);
                 }
 
-                let mut current_y =
-                    y_shift + (height as f64 / 2.0 - total_height / 2.0).round();
+                let mut current_y = y_shift + (height as f64 / 2.0 - total_height / 2.0).round();
                 for (line, extents) in lines.iter().zip(line_extents.iter()) {
                     let x = button_left_edge
                         + (button_width as f64 / 2.0 - extents.width() / 2.0).round();
@@ -903,7 +919,10 @@ impl Button {
                     Button::new_weather_forecast(cfg.weather_day.unwrap_or(0), cfg.theme.as_deref())
                 }
                 _ => {
-                    eprintln!("Unknown Weather kind '{}'; expected current or forecast", weather);
+                    eprintln!(
+                        "Unknown Weather kind '{}'; expected current or forecast",
+                        weather
+                    );
                     Button::new_spacer()
                 }
             }
@@ -1115,15 +1134,25 @@ impl Button {
         let mut plain = Vec::new();
         let mut charging = Vec::new();
         for icon in [
-            "battery_0_bar", "battery_1_bar", "battery_2_bar", "battery_3_bar",
-            "battery_4_bar", "battery_5_bar", "battery_6_bar", "battery_full",
+            "battery_0_bar",
+            "battery_1_bar",
+            "battery_2_bar",
+            "battery_3_bar",
+            "battery_4_bar",
+            "battery_5_bar",
+            "battery_6_bar",
+            "battery_full",
         ] {
             plain.push(Self::load_battery_image(icon, theme.as_ref()));
         }
         for icon in [
-            "battery_charging_20", "battery_charging_30", "battery_charging_50",
-            "battery_charging_60", "battery_charging_80",
-            "battery_charging_90", "battery_charging_full",
+            "battery_charging_20",
+            "battery_charging_30",
+            "battery_charging_50",
+            "battery_charging_60",
+            "battery_charging_80",
+            "battery_charging_90",
+            "battery_charging_full",
         ] {
             charging.push(Self::load_battery_image(icon, theme.as_ref()));
         }
@@ -1156,7 +1185,12 @@ impl Button {
         }
     }
 
-    fn new_time(action: Vec<Key>, command: Option<String>, format: &str, locale_str: Option<&str>) -> Button {
+    fn new_time(
+        action: Vec<Key>,
+        command: Option<String>,
+        format: &str,
+        locale_str: Option<&str>,
+    ) -> Button {
         let format_str = if format == "24hr" {
             "%H:%M    %a %-e %b"
         } else if format == "12hr" {
@@ -1353,28 +1387,39 @@ impl Button {
             ButtonImage::Battery(_, _, _) => "Battery",
             _ => "Other",
         };
-        eprintln!("TINY-DFR DEBUG: set_active called: button={}, active={}, has_command={}", 
-            button_type, active, self.command.is_some());
-        
+        eprintln!(
+            "TINY-DFR DEBUG: set_active called: button={}, active={}, has_command={}",
+            button_type,
+            active,
+            self.command.is_some()
+        );
+
         if self.active != active {
             self.active = active;
             self.changed = true;
 
             if !matches!(self.image, ButtonImage::LayerToggle(_, _)) {
                 toggle_keys(uinput, &self.action, active as i32);
-                
+
                 // Execute command on button press (not release)
                 if active {
                     if let Some(cmd_str) = &self.command {
                         eprintln!("TINY-DFR DEBUG: Executing command: {}", cmd_str);
-                        
+
                         // Build command with environment variables from current process
                         // If running as root and we have SUDO_UID, run command as that user
                         let mut command = if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
                             if let Ok(sudo_user) = std::env::var("SUDO_USER") {
-                                eprintln!("TINY-DFR DEBUG: Running command as user {} (UID {})", sudo_user, sudo_uid);
+                                eprintln!(
+                                    "TINY-DFR DEBUG: Running command as user {} (UID {})",
+                                    sudo_user, sudo_uid
+                                );
                                 let mut cmd = std::process::Command::new("sudo");
-                                cmd.arg("-u").arg(&sudo_user).arg("sh").arg("-c").arg(cmd_str);
+                                cmd.arg("-u")
+                                    .arg(&sudo_user)
+                                    .arg("sh")
+                                    .arg("-c")
+                                    .arg(cmd_str);
                                 cmd
                             } else {
                                 let mut cmd = std::process::Command::new("sh");
@@ -1386,7 +1431,7 @@ impl Button {
                             cmd.arg("-c").arg(cmd_str);
                             cmd
                         };
-                        
+
                         // Pass through Wayland/Hyprland environment if available
                         let mut env_debug = String::new();
                         if let Ok(val) = std::env::var("WAYLAND_DISPLAY") {
@@ -1407,12 +1452,15 @@ impl Button {
                         } else {
                             env_debug.push_str("HYPRLAND_INSTANCE_SIGNATURE=<not set> ");
                         }
-                        
+
                         eprintln!("TINY-DFR DEBUG: Environment: {}", env_debug);
-                        
+
                         match command.spawn() {
                             Ok(child) => {
-                                eprintln!("TINY-DFR DEBUG: Command spawned with PID: {:?}", child.id());
+                                eprintln!(
+                                    "TINY-DFR DEBUG: Command spawned with PID: {:?}",
+                                    child.id()
+                                );
                             }
                             Err(e) => {
                                 eprintln!("TINY-DFR DEBUG: Failed to spawn command: {}", e);
@@ -1470,14 +1518,12 @@ impl Button {
         if matches!(self.image, ButtonImage::Slider { .. }) {
             return true;
         }
-        !self.action.is_empty()
-            || self.command.is_some()
-            || self.layer_toggle_target().is_some()
+        !self.action.is_empty() || self.command.is_some() || self.layer_toggle_target().is_some()
     }
     fn is_visible(&self, sysinfo_mgr: Option<&SystemInfoManager>) -> bool {
         match self.image {
             ButtonImage::ActiveWindow | ButtonImage::ActiveWorkspace(_) => sysinfo_mgr
-                .map(|mgr| mgr.hyprland_available())
+                .map(|mgr| mgr.desktop_info_available())
                 .unwrap_or(false),
             ButtonImage::Spacer => false,
             _ => true,
@@ -2039,7 +2085,7 @@ fn real_main(drm: &mut DrmBackend) {
                 }
             }
         }
-        
+
         if layers[active_layer].displays_sysinfo {
             for button in &mut layers[active_layer].buttons {
                 match button.1.image {
@@ -2128,14 +2174,21 @@ fn real_main(drm: &mut DrmBackend) {
                 }
                 Event::Keyboard(KeyboardEvent::Key(key)) => {
                     if key.key() == Key::Fn as u32 {
-                        if cfg.double_press_switch_layers > 0 && layers.len() == 2 && key.key_state() == KeyState::Pressed {
-                            if last.elapsed() < Duration::from_millis(cfg.double_press_switch_layers.into()) {
+                        if cfg.double_press_switch_layers > 0
+                            && layers.len() == 2
+                            && key.key_state() == KeyState::Pressed
+                        {
+                            if last.elapsed()
+                                < Duration::from_millis(cfg.double_press_switch_layers.into())
+                            {
                                 layers.swap(0, 1);
                             }
                             last = Instant::now();
                         }
                         let new_layer = match key.key_state() {
-                            KeyState::Pressed => layer_index(&layers, "FKeys").unwrap_or(normal_layer),
+                            KeyState::Pressed => {
+                                layer_index(&layers, "FKeys").unwrap_or(normal_layer)
+                            }
                             KeyState::Released => normal_layer,
                         };
                         if active_layer != new_layer {
@@ -2174,8 +2227,8 @@ fn real_main(drm: &mut DrmBackend) {
                                             }
                                         }
                                         if !muted {
-                                            let frac = layers[active_layer]
-                                                .slider_fraction(width, btn, x);
+                                            let frac =
+                                                layers[active_layer].slider_fraction(width, btn, x);
                                             layers[active_layer].buttons[btn]
                                                 .1
                                                 .set_slider_fraction(frac);
