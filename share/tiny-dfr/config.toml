@@ -121,24 +121,24 @@ PrimaryLayerKeys = [
     # { Text = "TTY1", Action = [ "LeftCtrl", "LeftAlt", "F1" ] },
 
     # Example of Time:
-    # { Time = "12hr",  Action = "Time"},
+    # { Button = "time", Option = "12hr", Action = "Time"},
     # Example of Time with locale:
-    # { Time = "12hr",  Locale = "en_IN", Action = "Time"},
+    # { Button = "time", Option = "12hr", Locale = "en_IN", Action = "Time"},
     # Example of Time with stretch:
     # # the time key by default will be too small to accomodate date and time.
     # # So it is recommended to have a stretch of atleast 3 times the rest keys.
-    # { Time = "12hr",  Action = "Time", Stretch = 3},
+    # { Button = "time", Option = "12hr", Action = "Time", Stretch = 3},
     # You can also put in your format string directly.
     # The available variables can be found here: https://docs.rs/chrono/latest/chrono/format/strftime/index.html
     # If your time block says "Time format error" you are using some invalid parameter.
-    # { Time = "%H:%M %-e.%m.%Y", Action = "Time", Stretch = 2}
+    # { Button = "time", Option = "%H:%M %-e.%m.%Y", Action = "Time", Stretch = 2}
 
     # Example of Battery:
-    # { Battery = "percentage", Action = "Battery" }
+    # { Button = "battery", Option = "percentage", Action = "Battery" }
     # This will display a button showing the current battery percentage.
-    # { Battery = "icon", Action = "Battery" }
+    # { Button = "battery", Option = "icon", Action = "Battery" }
     # This will display a button showing a battery icon instead of percentage.
-    # { Battery = "both", Action = "Battery" }
+    # { Button = "battery", Option = "both", Action = "Battery" }
     # This will display a button showing a battery icon as well as percentage.
     # The logic used to calcuate the percentage will be:
     # 1. On T2 Macs:
@@ -163,14 +163,21 @@ PrimaryLayerKeys = [
 #                          Double-tap a volume slider to toggle mute.
 # Give sliders a larger Stretch so there is room for the bar.
 MediaLayerKeys = [
-    { Slider = "display_brightness", Stretch = 3 },
-    { Slider = "keyboard_backlight", Stretch = 3 },
+    { Button = "slider", Option = "display_brightness", Stretch = 3 },
+    { Button = "slider", Option = "keyboard_backlight", Stretch = 3 },
+    { Button = "notifications", LayerToggle = "Notifications", Children = [
+        { Button = "PreviousLayer" },
+        { Button = "PreviousNotification" },
+        { Button = "NotificationContent", Stretch = 8, FontSize = 24 },
+        { Button = "NextNotification" },
+        { Button = "DnDNotification", Stretch = 2 },
+    ] },
     { Icon = "mic_off",         Action = "MicMute"        },
     { Icon = "search",          Action = "Search"         },
     { Icon = "fast_rewind",     Action = "PreviousSong"   },
     { Icon = "play_pause",      Action = "PlayPause"      },
     { Icon = "fast_forward",    Action = "NextSong"       },
-    { Slider = "volume",             Stretch = 3 }
+    { Button = "slider", Option = "volume", Stretch = 3 }
 
     # The classic up/down buttons still work if you prefer them:
     # { Icon = "brightness_low",  Action = "BrightnessDown" },
@@ -196,6 +203,12 @@ MediaLayerKeys = [
     # { Icon = "audio-volume-high",    Theme = "breeze-dark", Action = "VolumeUp"       }
 ]
 
+# Notification buttons use `makoctl`, so they work with the mako notification
+# daemon. The count button above opens this layer. Press the text button to
+# invoke the notification's default action when it has one.
+# `Children` on a LayerToggle is shorthand for a separate `[[Layers.Name]]`
+# section. Stretch defaults to 1 and Action defaults to no action.
+
 # Weather buttons fetch from wttr.in (the same source the omarchy/waybar weather
 # module uses), which auto-detects your location by IP and provides a 3-day
 # forecast. Optional settings:
@@ -207,7 +220,8 @@ MediaLayerKeys = [
 # "forecast" buttons each show one day (WeatherDay 0 = today) and have no action.
 #
 # [[SystemInfoLayerKeys]]
-# Weather = "current"
+# Button = "weather"
+# Option = "current"
 # LayerToggle = "Weather"
 # Action = []
 # Stretch = 2
@@ -220,21 +234,24 @@ MediaLayerKeys = [
 # Stretch = 1
 #
 # [[Layers.Weather]]
-# Weather = "forecast"
+# Button = "weather"
+# Option = "forecast"
 # WeatherDay = 0
 # Action = []
 # Stretch = 2
 # Stacked = true
 #
 # [[Layers.Weather]]
-# Weather = "forecast"
+# Button = "weather"
+# Option = "forecast"
 # WeatherDay = 1
 # Action = []
 # Stretch = 2
 # Stacked = true
 #
 # [[Layers.Weather]]
-# Weather = "forecast"
+# Button = "weather"
+# Option = "forecast"
 # WeatherDay = 2
 # Action = []
 # Stretch = 2

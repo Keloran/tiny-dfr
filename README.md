@@ -32,6 +32,9 @@ so it is safe even with a customized service file:
 sudo install -Dm644 etc/systemd/system/tiny-dfr.service.d/network.conf /etc/systemd/system/tiny-dfr.service.d/network.conf
 ```
 
+The notification buttons use `makoctl`, so they require the mako notification
+daemon.
+
 The battery button's power-profile toggle runs `powerprofilesctl` from the
 service scope, which polkit does not treat as part of your active login
 session, so the switch is denied by default. Install the packaged polkit rule
