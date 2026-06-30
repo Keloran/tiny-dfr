@@ -201,6 +201,7 @@ struct Button {
     font_size: Option<f64>,
     max_title_length: Option<usize>,
     toggle_target: Option<String>,
+    hold_started: Option<Instant>,
 }
 
 // Unified rendering structures
@@ -1153,6 +1154,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_weather_current(theme: Option<&str>) -> Button {
@@ -1168,6 +1170,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_weather_forecast(day: usize, theme: Option<&str>) -> Button {
@@ -1183,6 +1186,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_notification(
@@ -1202,6 +1206,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_spacer() -> Button {
@@ -1217,6 +1222,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_text(text: String, action: Vec<Key>) -> Button {
@@ -1232,6 +1238,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_layer_toggle(target: String, label: String) -> Button {
@@ -1247,6 +1254,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_icon(
@@ -1270,6 +1278,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn load_battery_image(icon: &str, theme: Option<impl AsRef<str>>) -> Handle {
@@ -1339,6 +1348,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
 
@@ -1376,6 +1386,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_cpu_usage(
@@ -1411,6 +1422,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_memory_usage(
@@ -1446,6 +1458,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_active_window(action: Vec<Key>) -> Button {
@@ -1461,6 +1474,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_active_workspace(
@@ -1496,6 +1510,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn needs_faster_refresh(&self) -> bool {
@@ -1673,6 +1688,26 @@ impl Button {
             ButtonImage::Notification(kind, _, _) => Some(kind),
             _ => None,
         }
+    }
+    fn supports_hold(&self) -> bool {
+        matches!(self.notification_kind(), Some(NotificationButton::Text))
+    }
+    fn start_hold(&mut self) {
+        if self.supports_hold() {
+            self.hold_started = Some(Instant::now());
+            self.changed = true;
+        }
+    }
+    fn clear_hold(&mut self) {
+        if self.hold_started.is_some() {
+            self.hold_started = None;
+            self.changed = true;
+        }
+    }
+    fn hold_progress(&self) -> Option<f64> {
+        self.hold_started.map(|started| {
+            (started.elapsed().as_secs_f64() / LONG_PRESS_TIMEOUT.as_secs_f64()).clamp(0.0, 1.0)
+        })
     }
     // A button is interactive only if pressing it actually does something:
     // emits keys, runs a command, switches layers, or is a draggable slider.
@@ -1966,6 +2001,16 @@ impl FunctionLayer {
                 );
                 c.close_path();
                 c.fill().unwrap();
+                if let Some(progress) = button.hold_progress() {
+                    c.set_source_rgb(0.55, 0.55, 0.55);
+                    c.rectangle(
+                        left_edge,
+                        bot - radius,
+                        button_width * progress,
+                        top - bot + radius * 2.0,
+                    );
+                    c.fill().unwrap();
+                }
             }
             if button_visible {
                 c.set_source_rgb(1.0, 1.0, 1.0);
@@ -2406,6 +2451,19 @@ fn real_main(drm: &mut DrmBackend) {
             next_timeout_ms = min(next_timeout_ms, 1000);
         }
 
+        if layers[active_layer]
+            .buttons
+            .iter()
+            .any(|(_, button)| button.hold_started.is_some())
+        {
+            for (_, button) in &mut layers[active_layer].buttons {
+                if button.hold_started.is_some() {
+                    button.changed = true;
+                }
+            }
+            next_timeout_ms = min(next_timeout_ms, 50);
+        }
+
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
             let shift = if cfg.enable_pixel_shift {
                 pixel_shift.get()
@@ -2544,6 +2602,7 @@ fn real_main(drm: &mut DrmBackend) {
                                         layers[active_layer].buttons[btn]
                                             .1
                                             .set_active(&mut uinput, true);
+                                        layers[active_layer].buttons[btn].1.start_hold();
                                     }
                                 }
                             }
@@ -2572,6 +2631,9 @@ fn real_main(drm: &mut DrmBackend) {
                                     .hit(width, height, x, y, Some(btn), notification_mgr_ref)
                                     .is_some();
                                 layers[layer].buttons[btn].1.set_active(&mut uinput, hit);
+                                if !hit {
+                                    layers[layer].buttons[btn].1.clear_hold();
+                                }
                             }
                         }
                         TouchEvent::Up(up) => {
@@ -2591,6 +2653,7 @@ fn real_main(drm: &mut DrmBackend) {
                             let notification_kind =
                                 layers[layer].buttons[btn].1.notification_kind();
                             layers[layer].buttons[btn].1.set_active(&mut uinput, false);
+                            layers[layer].buttons[btn].1.clear_hold();
                             touches.remove(&up.seat_slot());
                             match notification_kind {
                                 Some(NotificationButton::Back) => {
