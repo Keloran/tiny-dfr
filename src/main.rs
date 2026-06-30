@@ -151,7 +151,7 @@ enum ButtonImage {
     },
     WeatherCurrent(WeatherIcons),
     WeatherForecast(usize, WeatherIcons),
-    Notification(NotificationButton, Option<Handle>),
+    Notification(NotificationButton, Option<Handle>, Option<Handle>),
     Spacer,
 }
 
@@ -213,6 +213,11 @@ enum ButtonContent {
     Bitmap(ImageSurface, f64, f64), // Surface, width, height
     // Icon + single line of text (horizontal or stacked)
     IconWithText {
+        icon: Handle,
+        icon_size: f64,
+        text: String,
+    },
+    IconWithCenteredText {
         icon: Handle,
         icon_size: f64,
         text: String,
@@ -429,7 +434,7 @@ impl Button {
                         } else {
                             workspace.clone()
                         };
-                        ButtonContent::IconWithText {
+                        ButtonContent::IconWithCenteredText {
                             icon: svg.clone(),
                             icon_size: self.icon_width.min(self.icon_height),
                             text: ws_text,
@@ -511,7 +516,7 @@ impl Button {
                     ButtonContent::Empty
                 }
             }
-            ButtonImage::Notification(kind, icon) => match (kind, notification_mgr) {
+            ButtonImage::Notification(kind, icon, active_icon) => match (kind, notification_mgr) {
                 (NotificationButton::Count, Some(mgr)) => {
                     if let Some(icon) = icon {
                         ButtonContent::IconWithText {
@@ -523,13 +528,30 @@ impl Button {
                         ButtonContent::SimpleText(mgr.count_text())
                     }
                 }
-                (NotificationButton::Back, _) => ButtonContent::SimpleText("<-".to_string()),
-                (NotificationButton::Previous, _) => ButtonContent::SimpleText("<".to_string()),
+                (NotificationButton::Back, _) => icon
+                    .as_ref()
+                    .map(|icon| ButtonContent::Icon(icon.clone(), DEFAULT_ICON_SIZE as f64))
+                    .unwrap_or_else(|| ButtonContent::SimpleText("<-".to_string())),
+                (NotificationButton::Previous, _) => icon
+                    .as_ref()
+                    .map(|icon| ButtonContent::Icon(icon.clone(), DEFAULT_ICON_SIZE as f64))
+                    .unwrap_or_else(|| ButtonContent::SimpleText("<".to_string())),
                 (NotificationButton::Text, Some(mgr)) => {
                     ButtonContent::ClippedText(mgr.current_text())
                 }
-                (NotificationButton::Next, _) => ButtonContent::SimpleText(">".to_string()),
-                (NotificationButton::Dnd, Some(mgr)) => ButtonContent::SimpleText(mgr.dnd_text()),
+                (NotificationButton::Next, _) => icon
+                    .as_ref()
+                    .map(|icon| ButtonContent::Icon(icon.clone(), DEFAULT_ICON_SIZE as f64))
+                    .unwrap_or_else(|| ButtonContent::SimpleText(">".to_string())),
+                (NotificationButton::Dnd, Some(mgr)) => {
+                    let icon = if mgr.dnd_enabled() {
+                        active_icon.as_ref().or(icon.as_ref())
+                    } else {
+                        icon.as_ref()
+                    };
+                    icon.map(|icon| ButtonContent::Icon(icon.clone(), DEFAULT_ICON_SIZE as f64))
+                        .unwrap_or_else(|| ButtonContent::SimpleText(mgr.dnd_text()))
+                }
                 _ => ButtonContent::Empty,
             },
             ButtonImage::Spacer => ButtonContent::Empty,
@@ -609,6 +631,24 @@ impl Button {
                     );
                     c.show_text(&text).unwrap();
                 }
+            }
+            ButtonContent::IconWithCenteredText {
+                icon,
+                icon_size,
+                text,
+            } => {
+                let icon_x =
+                    button_left_edge + (button_width as f64 / 2.0 - icon_size / 2.0).round();
+                let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+                icon.render_document(c, &Rectangle::new(icon_x, icon_y, icon_size, icon_size))
+                    .unwrap();
+
+                let extents = c.text_extents(&text).unwrap();
+                c.move_to(
+                    button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                    y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                );
+                c.show_text(&text).unwrap();
             }
             ButtonContent::IconWithMultilineText {
                 icon,
@@ -961,9 +1001,14 @@ impl Button {
         let option = cfg.option.clone();
 
         let mut button = if let Some(kind) = button_name.and_then(notification_button_alias) {
-            let icon = if matches!(kind, NotificationButton::Count) {
+            let default_icon = match kind {
+                NotificationButton::Count => Some("mail"),
+                NotificationButton::Dnd => Some("bell-ring"),
+                _ => None,
+            };
+            let icon = cfg.icon.as_deref().or(default_icon).and_then(|name| {
                 try_load_image(
-                    cfg.icon.as_deref().unwrap_or("mail"),
+                    name,
                     cfg.theme.as_deref(),
                     DEFAULT_ICON_SIZE,
                     DEFAULT_ICON_SIZE,
@@ -973,10 +1018,25 @@ impl Button {
                     ButtonImage::Svg(handle) => Some(handle),
                     _ => None,
                 })
-            } else {
-                None
-            };
-            Button::new_notification(kind, icon)
+            });
+            let active_icon = cfg
+                .icon_active
+                .as_deref()
+                .or_else(|| matches!(kind, NotificationButton::Dnd).then_some("bell-off"))
+                .and_then(|name| {
+                    try_load_image(
+                        name,
+                        cfg.theme.as_deref(),
+                        DEFAULT_ICON_SIZE,
+                        DEFAULT_ICON_SIZE,
+                    )
+                    .ok()
+                    .and_then(|img| match img {
+                        ButtonImage::Svg(handle) => Some(handle),
+                        _ => None,
+                    })
+                });
+            Button::new_notification(kind, icon, active_icon)
         } else if matches!(button_name, Some("Slider" | "slider")) {
             match option.as_deref().and_then(SliderKind::parse) {
                 Some(kind) => Button::new_slider(kind, cfg.theme.as_deref()),
@@ -1125,12 +1185,16 @@ impl Button {
             toggle_target: None,
         }
     }
-    fn new_notification(kind: NotificationButton, icon: Option<Handle>) -> Button {
+    fn new_notification(
+        kind: NotificationButton,
+        icon: Option<Handle>,
+        active_icon: Option<Handle>,
+    ) -> Button {
         Button {
             action: vec![],
             active: false,
             changed: false,
-            image: ButtonImage::Notification(kind, icon),
+            image: ButtonImage::Notification(kind, icon, active_icon),
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
@@ -1449,7 +1513,7 @@ impl Button {
             | ButtonImage::MemoryUsage(_)
             | ButtonImage::ActiveWindow
             | ButtonImage::ActiveWorkspace(_)
-            | ButtonImage::Notification(_, _) => true,
+            | ButtonImage::Notification(_, _, _) => true,
             _ => false,
         }
     }
@@ -1606,7 +1670,7 @@ impl Button {
     }
     fn notification_kind(&self) -> Option<NotificationButton> {
         match self.image {
-            ButtonImage::Notification(kind, _) => Some(kind),
+            ButtonImage::Notification(kind, _, _) => Some(kind),
             _ => None,
         }
     }
@@ -1619,7 +1683,7 @@ impl Button {
         if matches!(self.image, ButtonImage::Slider { .. }) {
             return true;
         }
-        if matches!(self.image, ButtonImage::Notification(_, _)) {
+        if matches!(self.image, ButtonImage::Notification(_, _, _)) {
             return true;
         }
         !self.action.is_empty() || self.command.is_some() || self.layer_toggle_target().is_some()
@@ -1636,8 +1700,9 @@ impl Button {
             ButtonImage::Notification(
                 NotificationButton::Previous | NotificationButton::Next,
                 _,
+                _,
             ) => notification_mgr
-                .map(|mgr| mgr.has_notifications())
+                .map(|mgr| mgr.can_navigate())
                 .unwrap_or(false),
             ButtonImage::Spacer => false,
             _ => true,
@@ -1666,18 +1731,71 @@ pub struct FunctionLayer {
     displays_slider: bool,
     displays_weather: bool,
     displays_notifications: bool,
-    buttons: Vec<(usize, Button)>,
-    virtual_button_count: usize,
+    buttons: Vec<(f64, Button)>,
+    virtual_button_count: f64,
     faster_refresh: bool,
 }
 
 impl FunctionLayer {
+    fn button_spans(&self, notification_mgr: Option<&NotificationManager>) -> Vec<(f64, f64)> {
+        let hide_notification_nav = self.displays_notifications
+            && notification_mgr
+                .map(|mgr| !mgr.can_navigate())
+                .unwrap_or(false);
+        let notification_nav_width = if hide_notification_nav {
+            self.buttons
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (_, button))| {
+                    matches!(
+                        button.notification_kind(),
+                        Some(NotificationButton::Previous | NotificationButton::Next)
+                    )
+                    .then(|| self.button_width_units(i))
+                })
+                .sum()
+        } else {
+            0.0
+        };
+
+        let mut cursor = 0.0;
+        self.buttons
+            .iter()
+            .enumerate()
+            .map(|(i, (_, button))| {
+                let mut width = self.button_width_units(i);
+                if hide_notification_nav {
+                    match button.notification_kind() {
+                        Some(NotificationButton::Previous | NotificationButton::Next) => {
+                            width = 0.0
+                        }
+                        Some(NotificationButton::Text) => width += notification_nav_width,
+                        _ => {}
+                    }
+                }
+                let start = cursor;
+                cursor += width;
+                (start, cursor)
+            })
+            .collect()
+    }
+
+    fn button_width_units(&self, i: usize) -> f64 {
+        let start = self.buttons[i].0;
+        let end = if i + 1 < self.buttons.len() {
+            self.buttons[i + 1].0
+        } else {
+            self.virtual_button_count
+        };
+        end - start
+    }
+
     fn with_config(name: impl Into<String>, cfg: Vec<ButtonConfig>) -> FunctionLayer {
         if cfg.is_empty() {
             panic!("Invalid configuration, layer has 0 buttons");
         }
 
-        let mut virtual_button_count = 0;
+        let mut virtual_button_count = 0.0;
         let has_button = |names: &[&str]| {
             cfg.iter()
                 .filter_map(|cfg| cfg.button.as_deref())
@@ -1709,10 +1827,10 @@ impl FunctionLayer {
             .into_iter()
             .scan(&mut virtual_button_count, |state, cfg| {
                 let i = **state;
-                let mut stretch = cfg.stretch.unwrap_or(1);
-                if stretch < 1 {
-                    println!("Stretch value must be at least 1, setting to 1.");
-                    stretch = 1;
+                let mut stretch = cfg.stretch.unwrap_or(1.0);
+                if stretch < 0.5 {
+                    println!("Stretch value must be at least 0.5, setting to 0.5.");
+                    stretch = 0.5;
                 }
                 **state += stretch;
                 Some((i, Button::with_config(cfg)))
@@ -1757,10 +1875,11 @@ impl FunctionLayer {
         } else {
             0
         };
-        let virtual_button_width = ((width - pixel_shift_width as i32)
-            - (BUTTON_SPACING_PX * (self.virtual_button_count - 1) as i32))
-            as f64
-            / self.virtual_button_count as f64;
+        let spans = self.button_spans(notification_mgr);
+        let visible_buttons = spans.iter().filter(|(start, end)| end > start).count();
+        let total_spacing = BUTTON_SPACING_PX as f64 * visible_buttons.saturating_sub(1) as f64;
+        let virtual_button_width =
+            (width as f64 - pixel_shift_width as f64 - total_spacing) / self.virtual_button_count;
         let radius = 8.0f64;
         let bot = (height as f64) * 0.15;
         let top = (height as f64) * 0.85;
@@ -1774,26 +1893,24 @@ impl FunctionLayer {
         c.set_font_size(config.font_size);
 
         for i in 0..self.buttons.len() {
-            let end = if i + 1 < self.buttons.len() {
-                self.buttons[i + 1].0
-            } else {
-                self.virtual_button_count
-            };
-            let (start, button) = &mut self.buttons[i];
-            let start = *start;
+            let (start, end) = spans[i];
+            let visible_i = spans[..i].iter().filter(|(start, end)| end > start).count();
+            let (_, button) = &mut self.buttons[i];
 
             if !button.changed && !complete_redraw {
                 continue;
             };
+            if end <= start {
+                continue;
+            }
 
-            let left_edge = (start as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64))
+            let left_edge = (start * virtual_button_width
+                + visible_i as f64 * BUTTON_SPACING_PX as f64)
                 .floor()
                 + pixel_shift_x
                 + (pixel_shift_width / 2) as f64;
 
-            let button_width = virtual_button_width
-                + ((end - start - 1) as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64))
-                    .floor();
+            let button_width = ((end - start) * virtual_button_width).floor();
 
             let color = if button.active {
                 BUTTON_COLOR_ACTIVE
@@ -1894,34 +2011,44 @@ impl FunctionLayer {
         i: Option<usize>,
         notification_mgr: Option<&NotificationManager>,
     ) -> Option<usize> {
-        let virtual_button_width =
-            (width as i32 - (BUTTON_SPACING_PX * (self.virtual_button_count - 1) as i32)) as f64
-                / self.virtual_button_count as f64;
+        let spans = self.button_spans(notification_mgr);
+        let visible_buttons = spans.iter().filter(|(start, end)| end > start).count();
+        let total_spacing = BUTTON_SPACING_PX as f64 * visible_buttons.saturating_sub(1) as f64;
+        let virtual_button_width = (width as f64 - total_spacing) / self.virtual_button_count;
 
         let i = i.unwrap_or_else(|| {
-            let virtual_i = (x / (width as f64 / self.virtual_button_count as f64)) as usize;
-            self.buttons
+            spans
                 .iter()
-                .position(|(start, _)| *start > virtual_i)
+                .enumerate()
+                .position(|(idx, (start, end))| {
+                    if end <= start {
+                        return false;
+                    }
+                    let visible_i = spans[..idx]
+                        .iter()
+                        .filter(|(start, end)| end > start)
+                        .count();
+                    let left =
+                        start * virtual_button_width + visible_i as f64 * BUTTON_SPACING_PX as f64;
+                    let right = left + (end - start) * virtual_button_width;
+                    x >= left && x <= right
+                })
                 .unwrap_or(self.buttons.len())
-                - 1
         });
         if i >= self.buttons.len() {
             return None;
         }
 
-        let start = self.buttons[i].0;
-        let end = if i + 1 < self.buttons.len() {
-            self.buttons[i + 1].0
-        } else {
-            self.virtual_button_count
-        };
+        let (start, end) = spans[i];
+        if end <= start {
+            return None;
+        }
+        let visible_i = spans[..i].iter().filter(|(start, end)| end > start).count();
 
-        let left_edge = (start as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64)).floor();
+        let left_edge =
+            (start * virtual_button_width + visible_i as f64 * BUTTON_SPACING_PX as f64).floor();
 
-        let button_width = virtual_button_width
-            + ((end - start - 1) as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64))
-                .floor();
+        let button_width = ((end - start) * virtual_button_width).floor();
 
         if x < left_edge
             || x > (left_edge + button_width)
@@ -1946,9 +2073,8 @@ impl FunctionLayer {
 
     // Fraction (0.0..=1.0) of the touch x-position across button `i`'s width.
     fn slider_fraction(&self, width: u16, i: usize, x: f64) -> f64 {
-        let virtual_button_width =
-            (width as i32 - (BUTTON_SPACING_PX * (self.virtual_button_count - 1) as i32)) as f64
-                / self.virtual_button_count as f64;
+        let total_spacing = BUTTON_SPACING_PX as f64 * self.buttons.len().saturating_sub(1) as f64;
+        let virtual_button_width = (width as f64 - total_spacing) / self.virtual_button_count;
 
         let start = self.buttons[i].0;
         let end = if i + 1 < self.buttons.len() {
@@ -1957,10 +2083,9 @@ impl FunctionLayer {
             self.virtual_button_count
         };
 
-        let left_edge = (start as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64)).floor();
-        let button_width = virtual_button_width
-            + ((end - start - 1) as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64))
-                .floor();
+        let left_edge =
+            (start * virtual_button_width + i as f64 * BUTTON_SPACING_PX as f64).floor();
+        let button_width = ((end - start) * virtual_button_width).floor();
 
         ((x - left_edge) / button_width).clamp(0.0, 1.0)
     }
@@ -2276,11 +2401,7 @@ fn real_main(drm: &mut DrmBackend) {
 
         if layers[active_layer].displays_notifications {
             if notification_mgr.refresh() {
-                for button in &mut layers[active_layer].buttons {
-                    if matches!(button.1.image, ButtonImage::Notification(_, _)) {
-                        button.1.changed = true;
-                    }
-                }
+                needs_complete_redraw = true;
             }
             next_timeout_ms = min(next_timeout_ms, 1000);
         }

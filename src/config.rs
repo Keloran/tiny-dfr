@@ -117,6 +117,7 @@ pub struct ButtonConfig {
     pub option: Option<String>,
     #[serde(alias = "Svg")]
     pub icon: Option<String>,
+    pub icon_active: Option<String>,
     pub text: Option<String>,
     pub theme: Option<String>,
     pub locale: Option<String>,
@@ -125,7 +126,7 @@ pub struct ButtonConfig {
     #[serde(deserialize_with = "array_or_single", default)]
     pub action: Vec<Key>,
     pub command: Option<String>,
-    pub stretch: Option<usize>,
+    pub stretch: Option<f64>,
     pub icon_width: Option<i32>,
     pub icon_height: Option<i32>,
     #[serde(default)]
@@ -224,6 +225,7 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
                     button: None,
                     option: None,
                     icon: None,
+                    icon_active: None,
                     text: Some("esc".into()),
                     theme: None,
                     action: vec![Key::Esc],

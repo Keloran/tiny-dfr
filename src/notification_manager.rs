@@ -80,6 +80,10 @@ impl NotificationManager {
         }
     }
 
+    pub fn dnd_enabled(&self) -> bool {
+        self.dnd
+    }
+
     pub fn previous(&mut self) {
         self.index = self.index.saturating_sub(1);
     }
@@ -90,8 +94,8 @@ impl NotificationManager {
         }
     }
 
-    pub fn has_notifications(&self) -> bool {
-        !self.notifications.is_empty()
+    pub fn can_navigate(&self) -> bool {
+        self.notifications.len() > 1
     }
 
     pub fn invoke_current(&self) {
