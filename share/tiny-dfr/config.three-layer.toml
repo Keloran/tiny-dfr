@@ -48,7 +48,7 @@ SystemInfoLayerKeys = [
     # Smaller font size for compact display
     { 
         Icon = "cpu", 
-        CpuUsage = true, 
+        Button = "CpuUsage", 
         Stacked = true,
         FontSize = 16.0,
         Action = [], 
@@ -62,7 +62,7 @@ SystemInfoLayerKeys = [
     #          |       |  total: X.XG |
     { 
         Icon = "memory", 
-        MemoryUsage = true, 
+        Button = "MemoryUsage", 
         Stacked = true,
         FontSize = 16.0,
         Action = [], 
@@ -72,7 +72,7 @@ SystemInfoLayerKeys = [
     
     # Active window title (horizontal, default font)
     { 
-        ActiveWindow = true, 
+        Button = "ActiveWindow", 
         Action = [], 
         Stretch = 4 
     },
@@ -80,7 +80,7 @@ SystemInfoLayerKeys = [
     # Active workspace with stacked layout: icon left, workspace name right
     { 
         Icon = "window",
-        ActiveWorkspace = true, 
+        Button = "ActiveWorkspace", 
         Stacked = true,
         FontSize = 16.0,
         Action = [], 
@@ -93,7 +93,8 @@ SystemInfoLayerKeys = [
     #          | logo  |             |
     #          |       |  profile    |
     { 
-        Battery = "both", 
+        Button = "battery", 
+        Option = "both", 
         Stacked = true,
         FontSize = 16.0,
         Action = [], 
@@ -103,7 +104,8 @@ SystemInfoLayerKeys = [
     
     # Time and date (horizontal, default font)
     { 
-        Time = "24hr", 
+        Button = "time", 
+        Option = "24hr", 
         Action = [], 
         Stretch = 2 
     }

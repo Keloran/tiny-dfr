@@ -43,6 +43,7 @@ mod backlight;
 mod config;
 mod display;
 mod fonts;
+mod notification_manager;
 mod pixel_shift;
 mod slider;
 mod sysinfo_manager;
@@ -53,6 +54,7 @@ use crate::config::ConfigManager;
 use backlight::BacklightManager;
 use config::{ButtonConfig, Config};
 use display::DrmBackend;
+use notification_manager::NotificationManager;
 use pixel_shift::{PixelShiftManager, PIXEL_SHIFT_WIDTH_PX};
 use slider::{Slider, SliderKind};
 use sysinfo_manager::SystemInfoManager;
@@ -66,6 +68,7 @@ const DEFAULT_ICON_SIZE: i32 = 48;
 const TIMEOUT_MS: i32 = 10 * 1000;
 const SLIDER_REFRESH_MS: i32 = 1000;
 const DOUBLE_TAP_TIMEOUT: Duration = Duration::from_millis(300);
+const LONG_PRESS_TIMEOUT: Duration = Duration::from_millis(600);
 const EXIT_DRM_UNAVAILABLE: i32 = 75;
 const DRM_OPEN_ATTEMPTS: u32 = 6;
 const DRM_OPEN_RETRY_DELAY: Duration = Duration::from_secs(2);
@@ -148,7 +151,38 @@ enum ButtonImage {
     },
     WeatherCurrent(WeatherIcons),
     WeatherForecast(usize, WeatherIcons),
+    Notification(NotificationButton, Option<Handle>, Option<Handle>),
     Spacer,
+}
+
+#[derive(Clone, Copy)]
+enum NotificationButton {
+    Count,
+    Back,
+    Previous,
+    Text,
+    Next,
+    Dnd,
+}
+
+fn notification_button_alias(name: &str) -> Option<NotificationButton> {
+    match name {
+        "notifications" | "noticiations" => Some(NotificationButton::Count),
+        "PreviousLayer" => Some(NotificationButton::Back),
+        "PreviousNotification" => Some(NotificationButton::Previous),
+        "NotificationContent" => Some(NotificationButton::Text),
+        "NextNotification" => Some(NotificationButton::Next),
+        "DnDNotification" => Some(NotificationButton::Dnd),
+        _ => None,
+    }
+}
+
+fn normalize_time_option(option: String) -> String {
+    match option.as_str() {
+        "24h" => "24hr".to_string(),
+        "12h" => "12hr".to_string(),
+        _ => option,
+    }
 }
 
 fn layer_index(layers: &[FunctionLayer], name: &str) -> Option<usize> {
@@ -167,6 +201,7 @@ struct Button {
     font_size: Option<f64>,
     max_title_length: Option<usize>,
     toggle_target: Option<String>,
+    hold_started: Option<Instant>,
 }
 
 // Unified rendering structures
@@ -179,6 +214,11 @@ enum ButtonContent {
     Bitmap(ImageSurface, f64, f64), // Surface, width, height
     // Icon + single line of text (horizontal or stacked)
     IconWithText {
+        icon: Handle,
+        icon_size: f64,
+        text: String,
+    },
+    IconWithCenteredText {
         icon: Handle,
         icon_size: f64,
         text: String,
@@ -213,6 +253,7 @@ impl Button {
         &self,
         sysinfo_mgr: Option<&SystemInfoManager>,
         weather_mgr: Option<&WeatherManager>,
+        notification_mgr: Option<&NotificationManager>,
     ) -> ButtonContent {
         match &self.image {
             ButtonImage::Text(text) | ButtonImage::LayerToggle(_, text) => {
@@ -394,7 +435,7 @@ impl Button {
                         } else {
                             workspace.clone()
                         };
-                        ButtonContent::IconWithText {
+                        ButtonContent::IconWithCenteredText {
                             icon: svg.clone(),
                             icon_size: self.icon_width.min(self.icon_height),
                             text: ws_text,
@@ -476,6 +517,44 @@ impl Button {
                     ButtonContent::Empty
                 }
             }
+            ButtonImage::Notification(kind, icon, active_icon) => match (kind, notification_mgr) {
+                (NotificationButton::Count, Some(mgr)) => {
+                    if let Some(icon) = icon {
+                        ButtonContent::IconWithText {
+                            icon: icon.clone(),
+                            icon_size: DEFAULT_ICON_SIZE as f64,
+                            text: mgr.count_text(),
+                        }
+                    } else {
+                        ButtonContent::SimpleText(mgr.count_text())
+                    }
+                }
+                (NotificationButton::Back, _) => icon
+                    .as_ref()
+                    .map(|icon| ButtonContent::Icon(icon.clone(), DEFAULT_ICON_SIZE as f64))
+                    .unwrap_or_else(|| ButtonContent::SimpleText("<-".to_string())),
+                (NotificationButton::Previous, _) => icon
+                    .as_ref()
+                    .map(|icon| ButtonContent::Icon(icon.clone(), DEFAULT_ICON_SIZE as f64))
+                    .unwrap_or_else(|| ButtonContent::SimpleText("<".to_string())),
+                (NotificationButton::Text, Some(mgr)) => {
+                    ButtonContent::ClippedText(mgr.current_text())
+                }
+                (NotificationButton::Next, _) => icon
+                    .as_ref()
+                    .map(|icon| ButtonContent::Icon(icon.clone(), DEFAULT_ICON_SIZE as f64))
+                    .unwrap_or_else(|| ButtonContent::SimpleText(">".to_string())),
+                (NotificationButton::Dnd, Some(mgr)) => {
+                    let icon = if mgr.dnd_enabled() {
+                        active_icon.as_ref().or(icon.as_ref())
+                    } else {
+                        icon.as_ref()
+                    };
+                    icon.map(|icon| ButtonContent::Icon(icon.clone(), DEFAULT_ICON_SIZE as f64))
+                        .unwrap_or_else(|| ButtonContent::SimpleText(mgr.dnd_text()))
+                }
+                _ => ButtonContent::Empty,
+            },
             ButtonImage::Spacer => ButtonContent::Empty,
         }
     }
@@ -553,6 +632,24 @@ impl Button {
                     );
                     c.show_text(&text).unwrap();
                 }
+            }
+            ButtonContent::IconWithCenteredText {
+                icon,
+                icon_size,
+                text,
+            } => {
+                let icon_x =
+                    button_left_edge + (button_width as f64 / 2.0 - icon_size / 2.0).round();
+                let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+                icon.render_document(c, &Rectangle::new(icon_x, icon_y, icon_size, icon_size))
+                    .unwrap();
+
+                let extents = c.text_extents(&text).unwrap();
+                c.move_to(
+                    button_left_edge + (button_width as f64 / 2.0 - extents.width() / 2.0).round(),
+                    y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                );
+                c.show_text(&text).unwrap();
             }
             ButtonContent::IconWithMultilineText {
                 icon,
@@ -901,42 +998,84 @@ impl Button {
         // falls through to the dedicated toggle button at the end.
         let toggle_target = cfg.layer_toggle.clone();
 
-        let mut button = if let Some(slider) = cfg.slider {
-            match SliderKind::parse(&slider) {
+        let button_name = cfg.button.as_deref();
+        let option = cfg.option.clone();
+
+        let mut button = if let Some(kind) = button_name.and_then(notification_button_alias) {
+            let default_icon = match kind {
+                NotificationButton::Count => Some("mail"),
+                NotificationButton::Dnd => Some("bell-ring"),
+                _ => None,
+            };
+            let icon = cfg.icon.as_deref().or(default_icon).and_then(|name| {
+                try_load_image(
+                    name,
+                    cfg.theme.as_deref(),
+                    DEFAULT_ICON_SIZE,
+                    DEFAULT_ICON_SIZE,
+                )
+                .ok()
+                .and_then(|img| match img {
+                    ButtonImage::Svg(handle) => Some(handle),
+                    _ => None,
+                })
+            });
+            let active_icon = cfg
+                .icon_active
+                .as_deref()
+                .or_else(|| matches!(kind, NotificationButton::Dnd).then_some("bell-off"))
+                .and_then(|name| {
+                    try_load_image(
+                        name,
+                        cfg.theme.as_deref(),
+                        DEFAULT_ICON_SIZE,
+                        DEFAULT_ICON_SIZE,
+                    )
+                    .ok()
+                    .and_then(|img| match img {
+                        ButtonImage::Svg(handle) => Some(handle),
+                        _ => None,
+                    })
+                });
+            Button::new_notification(kind, icon, active_icon)
+        } else if matches!(button_name, Some("Slider" | "slider")) {
+            match option.as_deref().and_then(SliderKind::parse) {
                 Some(kind) => Button::new_slider(kind, cfg.theme.as_deref()),
                 None => {
                     eprintln!(
-                        "Unknown Slider kind '{}'; expected display_brightness, keyboard_backlight, or volume",
-                        slider
+                        "Unknown Slider option '{}'; expected display_brightness, keyboard_backlight, or volume",
+                        option.unwrap_or_default()
                     );
                     Button::new_spacer()
                 }
             }
-        } else if let Some(weather) = cfg.weather {
-            match weather.as_str() {
+        } else if matches!(button_name, Some("Weather" | "weather")) {
+            match option.as_deref().unwrap_or("current") {
                 "current" => Button::new_weather_current(cfg.theme.as_deref()),
                 "forecast" => {
                     Button::new_weather_forecast(cfg.weather_day.unwrap_or(0), cfg.theme.as_deref())
                 }
-                _ => {
+                weather => {
                     eprintln!(
-                        "Unknown Weather kind '{}'; expected current or forecast",
+                        "Unknown Weather option '{}'; expected current or forecast",
                         weather
                     );
                     Button::new_spacer()
                 }
             }
+        } else if matches!(button_name, Some("Time" | "time")) {
+            let time = normalize_time_option(option.unwrap_or_else(|| "24hr".to_string()));
+            Button::new_time(cfg.action, cfg.command, &time, cfg.locale.as_deref())
         } else if let Some(text) = cfg.text {
             Button::new_text(text, cfg.action)
-        } else if let Some(time) = cfg.time {
-            Button::new_time(cfg.action, cfg.command, &time, cfg.locale.as_deref())
-        } else if let Some(battery_mode) = cfg.battery {
+        } else if matches!(button_name, Some("Battery" | "battery")) {
+            let battery_mode = option.unwrap_or_else(|| "percentage".to_string());
             if let Some(battery) = find_battery_device() {
                 Button::new_battery(cfg.action, cfg.command, battery, battery_mode, cfg.theme)
             } else {
                 Button::new_text("Battery N/A".to_string(), cfg.action)
             }
-        } else if cfg.cpu_usage {
+        } else if matches!(button_name, Some("CpuUsage" | "CPU" | "cpu")) {
             Button::new_cpu_usage(
                 cfg.action,
                 cfg.command.clone(),
@@ -945,7 +1084,7 @@ impl Button {
                 cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
                 cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
             )
-        } else if cfg.memory_usage {
+        } else if matches!(button_name, Some("MemoryUsage" | "Memory" | "memory")) {
             Button::new_memory_usage(
                 cfg.action,
                 cfg.command,
@@ -954,9 +1093,9 @@ impl Button {
                 cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
                 cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
             )
-        } else if cfg.active_window {
+        } else if matches!(button_name, Some("ActiveWindow" | "active_window")) {
             Button::new_active_window(cfg.action)
-        } else if cfg.active_workspace {
+        } else if matches!(button_name, Some("ActiveWorkspace" | "active_workspace")) {
             Button::new_active_workspace(
                 cfg.action,
                 cfg.command,
@@ -1015,6 +1154,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_weather_current(theme: Option<&str>) -> Button {
@@ -1030,6 +1170,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_weather_forecast(day: usize, theme: Option<&str>) -> Button {
@@ -1045,6 +1186,27 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
+        }
+    }
+    fn new_notification(
+        kind: NotificationButton,
+        icon: Option<Handle>,
+        active_icon: Option<Handle>,
+    ) -> Button {
+        Button {
+            action: vec![],
+            active: false,
+            changed: false,
+            image: ButtonImage::Notification(kind, icon, active_icon),
+            command: None,
+            icon_width: 0.0,
+            icon_height: 0.0,
+            stacked: false,
+            font_size: None,
+            max_title_length: None,
+            toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_spacer() -> Button {
@@ -1060,6 +1222,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_text(text: String, action: Vec<Key>) -> Button {
@@ -1075,6 +1238,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_layer_toggle(target: String, label: String) -> Button {
@@ -1090,6 +1254,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_icon(
@@ -1113,6 +1278,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn load_battery_image(icon: &str, theme: Option<impl AsRef<str>>) -> Handle {
@@ -1182,6 +1348,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
 
@@ -1219,6 +1386,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_cpu_usage(
@@ -1254,6 +1422,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_memory_usage(
@@ -1289,6 +1458,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_active_window(action: Vec<Key>) -> Button {
@@ -1304,6 +1474,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn new_active_workspace(
@@ -1339,6 +1510,7 @@ impl Button {
             font_size: None,
             max_title_length: None,
             toggle_target: None,
+            hold_started: None,
         }
     }
     fn needs_faster_refresh(&self) -> bool {
@@ -1355,7 +1527,8 @@ impl Button {
             ButtonImage::CpuUsage(_)
             | ButtonImage::MemoryUsage(_)
             | ButtonImage::ActiveWindow
-            | ButtonImage::ActiveWorkspace(_) => true,
+            | ButtonImage::ActiveWorkspace(_)
+            | ButtonImage::Notification(_, _, _) => true,
             _ => false,
         }
     }
@@ -1368,9 +1541,10 @@ impl Button {
         y_shift: f64,
         sysinfo_mgr: Option<&SystemInfoManager>,
         weather_mgr: Option<&WeatherManager>,
+        notification_mgr: Option<&NotificationManager>,
     ) {
         // Get the content for this button
-        let content = self.get_content(sysinfo_mgr, weather_mgr);
+        let content = self.get_content(sysinfo_mgr, weather_mgr, notification_mgr);
 
         // Render the content using the unified rendering function
         self.render_content(c, content, height, button_left_edge, button_width, y_shift);
@@ -1509,6 +1683,32 @@ impl Button {
             _ => self.toggle_target.as_deref(),
         }
     }
+    fn notification_kind(&self) -> Option<NotificationButton> {
+        match self.image {
+            ButtonImage::Notification(kind, _, _) => Some(kind),
+            _ => None,
+        }
+    }
+    fn supports_hold(&self) -> bool {
+        matches!(self.notification_kind(), Some(NotificationButton::Text))
+    }
+    fn start_hold(&mut self) {
+        if self.supports_hold() {
+            self.hold_started = Some(Instant::now());
+            self.changed = true;
+        }
+    }
+    fn clear_hold(&mut self) {
+        if self.hold_started.is_some() {
+            self.hold_started = None;
+            self.changed = true;
+        }
+    }
+    fn hold_progress(&self) -> Option<f64> {
+        self.hold_started.map(|started| {
+            (started.elapsed().as_secs_f64() / LONG_PRESS_TIMEOUT.as_secs_f64()).clamp(0.0, 1.0)
+        })
+    }
     // A button is interactive only if pressing it actually does something:
     // emits keys, runs a command, switches layers, or is a draggable slider.
     // Display-only buttons (time, weather, cpu/mem readouts, plain labels)
@@ -1518,12 +1718,26 @@ impl Button {
         if matches!(self.image, ButtonImage::Slider { .. }) {
             return true;
         }
+        if matches!(self.image, ButtonImage::Notification(_, _, _)) {
+            return true;
+        }
         !self.action.is_empty() || self.command.is_some() || self.layer_toggle_target().is_some()
     }
-    fn is_visible(&self, sysinfo_mgr: Option<&SystemInfoManager>) -> bool {
+    fn is_visible(
+        &self,
+        sysinfo_mgr: Option<&SystemInfoManager>,
+        notification_mgr: Option<&NotificationManager>,
+    ) -> bool {
         match self.image {
             ButtonImage::ActiveWindow | ButtonImage::ActiveWorkspace(_) => sysinfo_mgr
                 .map(|mgr| mgr.desktop_info_available())
+                .unwrap_or(false),
+            ButtonImage::Notification(
+                NotificationButton::Previous | NotificationButton::Next,
+                _,
+                _,
+            ) => notification_mgr
+                .map(|mgr| mgr.can_navigate())
                 .unwrap_or(false),
             ButtonImage::Spacer => false,
             _ => true,
@@ -1551,33 +1765,107 @@ pub struct FunctionLayer {
     displays_sysinfo: bool,
     displays_slider: bool,
     displays_weather: bool,
-    buttons: Vec<(usize, Button)>,
-    virtual_button_count: usize,
+    displays_notifications: bool,
+    buttons: Vec<(f64, Button)>,
+    virtual_button_count: f64,
     faster_refresh: bool,
 }
 
 impl FunctionLayer {
+    fn button_spans(&self, notification_mgr: Option<&NotificationManager>) -> Vec<(f64, f64)> {
+        let hide_notification_nav = self.displays_notifications
+            && notification_mgr
+                .map(|mgr| !mgr.can_navigate())
+                .unwrap_or(false);
+        let notification_nav_width = if hide_notification_nav {
+            self.buttons
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (_, button))| {
+                    matches!(
+                        button.notification_kind(),
+                        Some(NotificationButton::Previous | NotificationButton::Next)
+                    )
+                    .then(|| self.button_width_units(i))
+                })
+                .sum()
+        } else {
+            0.0
+        };
+
+        let mut cursor = 0.0;
+        self.buttons
+            .iter()
+            .enumerate()
+            .map(|(i, (_, button))| {
+                let mut width = self.button_width_units(i);
+                if hide_notification_nav {
+                    match button.notification_kind() {
+                        Some(NotificationButton::Previous | NotificationButton::Next) => {
+                            width = 0.0
+                        }
+                        Some(NotificationButton::Text) => width += notification_nav_width,
+                        _ => {}
+                    }
+                }
+                let start = cursor;
+                cursor += width;
+                (start, cursor)
+            })
+            .collect()
+    }
+
+    fn button_width_units(&self, i: usize) -> f64 {
+        let start = self.buttons[i].0;
+        let end = if i + 1 < self.buttons.len() {
+            self.buttons[i + 1].0
+        } else {
+            self.virtual_button_count
+        };
+        end - start
+    }
+
     fn with_config(name: impl Into<String>, cfg: Vec<ButtonConfig>) -> FunctionLayer {
         if cfg.is_empty() {
             panic!("Invalid configuration, layer has 0 buttons");
         }
 
-        let mut virtual_button_count = 0;
-        let displays_time = cfg.iter().any(|cfg| cfg.time.is_some());
-        let displays_battery = cfg.iter().any(|cfg| cfg.battery.is_some());
-        let displays_sysinfo = cfg.iter().any(|cfg| {
-            cfg.cpu_usage || cfg.memory_usage || cfg.active_window || cfg.active_workspace
+        let mut virtual_button_count = 0.0;
+        let has_button = |names: &[&str]| {
+            cfg.iter()
+                .filter_map(|cfg| cfg.button.as_deref())
+                .any(|button| names.contains(&button))
+        };
+        let displays_time = has_button(&["Time", "time"]);
+        let displays_battery = has_button(&["Battery", "battery"]);
+        let displays_sysinfo = has_button(&[
+            "CpuUsage",
+            "CPU",
+            "cpu",
+            "MemoryUsage",
+            "Memory",
+            "memory",
+            "ActiveWindow",
+            "active_window",
+            "ActiveWorkspace",
+            "active_workspace",
+        ]);
+        let displays_slider = has_button(&["Slider", "slider"]);
+        let displays_weather = has_button(&["Weather", "weather"]);
+        let displays_notifications = cfg.iter().any(|cfg| {
+            cfg.button
+                .as_deref()
+                .and_then(notification_button_alias)
+                .is_some()
         });
-        let displays_slider = cfg.iter().any(|cfg| cfg.slider.is_some());
-        let displays_weather = cfg.iter().any(|cfg| cfg.weather.is_some());
         let buttons = cfg
             .into_iter()
             .scan(&mut virtual_button_count, |state, cfg| {
                 let i = **state;
-                let mut stretch = cfg.stretch.unwrap_or(1);
-                if stretch < 1 {
-                    println!("Stretch value must be at least 1, setting to 1.");
-                    stretch = 1;
+                let mut stretch = cfg.stretch.unwrap_or(1.0);
+                if stretch < 0.5 {
+                    println!("Stretch value must be at least 0.5, setting to 0.5.");
+                    stretch = 0.5;
                 }
                 **state += stretch;
                 Some((i, Button::with_config(cfg)))
@@ -1591,6 +1879,7 @@ impl FunctionLayer {
             displays_sysinfo,
             displays_slider,
             displays_weather,
+            displays_notifications,
             buttons,
             virtual_button_count,
             faster_refresh,
@@ -1606,6 +1895,7 @@ impl FunctionLayer {
         complete_redraw: bool,
         sysinfo_mgr: Option<&SystemInfoManager>,
         weather_mgr: Option<&WeatherManager>,
+        notification_mgr: Option<&NotificationManager>,
     ) -> Vec<ClipRect> {
         let c = Context::new(surface).unwrap();
         let mut modified_regions = if complete_redraw {
@@ -1620,10 +1910,11 @@ impl FunctionLayer {
         } else {
             0
         };
-        let virtual_button_width = ((width - pixel_shift_width as i32)
-            - (BUTTON_SPACING_PX * (self.virtual_button_count - 1) as i32))
-            as f64
-            / self.virtual_button_count as f64;
+        let spans = self.button_spans(notification_mgr);
+        let visible_buttons = spans.iter().filter(|(start, end)| end > start).count();
+        let total_spacing = BUTTON_SPACING_PX as f64 * visible_buttons.saturating_sub(1) as f64;
+        let virtual_button_width =
+            (width as f64 - pixel_shift_width as f64 - total_spacing) / self.virtual_button_count;
         let radius = 8.0f64;
         let bot = (height as f64) * 0.15;
         let top = (height as f64) * 0.85;
@@ -1637,26 +1928,24 @@ impl FunctionLayer {
         c.set_font_size(config.font_size);
 
         for i in 0..self.buttons.len() {
-            let end = if i + 1 < self.buttons.len() {
-                self.buttons[i + 1].0
-            } else {
-                self.virtual_button_count
-            };
-            let (start, button) = &mut self.buttons[i];
-            let start = *start;
+            let (start, end) = spans[i];
+            let visible_i = spans[..i].iter().filter(|(start, end)| end > start).count();
+            let (_, button) = &mut self.buttons[i];
 
             if !button.changed && !complete_redraw {
                 continue;
             };
+            if end <= start {
+                continue;
+            }
 
-            let left_edge = (start as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64))
+            let left_edge = (start * virtual_button_width
+                + visible_i as f64 * BUTTON_SPACING_PX as f64)
                 .floor()
                 + pixel_shift_x
                 + (pixel_shift_width / 2) as f64;
 
-            let button_width = virtual_button_width
-                + ((end - start - 1) as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64))
-                    .floor();
+            let button_width = ((end - start) * virtual_button_width).floor();
 
             let color = if button.active {
                 BUTTON_COLOR_ACTIVE
@@ -1665,7 +1954,7 @@ impl FunctionLayer {
             } else {
                 0.0
             };
-            let button_visible = button.is_visible(sysinfo_mgr);
+            let button_visible = button.is_visible(sysinfo_mgr, notification_mgr);
             if !complete_redraw {
                 c.set_source_rgb(0.0, 0.0, 0.0);
                 c.rectangle(
@@ -1712,6 +2001,16 @@ impl FunctionLayer {
                 );
                 c.close_path();
                 c.fill().unwrap();
+                if let Some(progress) = button.hold_progress() {
+                    c.set_source_rgb(0.55, 0.55, 0.55);
+                    c.rectangle(
+                        left_edge,
+                        bot - radius,
+                        button_width * progress,
+                        top - bot + radius * 2.0,
+                    );
+                    c.fill().unwrap();
+                }
             }
             if button_visible {
                 c.set_source_rgb(1.0, 1.0, 1.0);
@@ -1729,6 +2028,7 @@ impl FunctionLayer {
                     pixel_shift_y,
                     sysinfo_mgr,
                     weather_mgr,
+                    notification_mgr,
                 );
             }
 
@@ -1747,35 +2047,53 @@ impl FunctionLayer {
         modified_regions
     }
 
-    fn hit(&self, width: u16, height: u16, x: f64, y: f64, i: Option<usize>) -> Option<usize> {
-        let virtual_button_width =
-            (width as i32 - (BUTTON_SPACING_PX * (self.virtual_button_count - 1) as i32)) as f64
-                / self.virtual_button_count as f64;
+    fn hit(
+        &self,
+        width: u16,
+        height: u16,
+        x: f64,
+        y: f64,
+        i: Option<usize>,
+        notification_mgr: Option<&NotificationManager>,
+    ) -> Option<usize> {
+        let spans = self.button_spans(notification_mgr);
+        let visible_buttons = spans.iter().filter(|(start, end)| end > start).count();
+        let total_spacing = BUTTON_SPACING_PX as f64 * visible_buttons.saturating_sub(1) as f64;
+        let virtual_button_width = (width as f64 - total_spacing) / self.virtual_button_count;
 
         let i = i.unwrap_or_else(|| {
-            let virtual_i = (x / (width as f64 / self.virtual_button_count as f64)) as usize;
-            self.buttons
+            spans
                 .iter()
-                .position(|(start, _)| *start > virtual_i)
+                .enumerate()
+                .position(|(idx, (start, end))| {
+                    if end <= start {
+                        return false;
+                    }
+                    let visible_i = spans[..idx]
+                        .iter()
+                        .filter(|(start, end)| end > start)
+                        .count();
+                    let left =
+                        start * virtual_button_width + visible_i as f64 * BUTTON_SPACING_PX as f64;
+                    let right = left + (end - start) * virtual_button_width;
+                    x >= left && x <= right
+                })
                 .unwrap_or(self.buttons.len())
-                - 1
         });
         if i >= self.buttons.len() {
             return None;
         }
 
-        let start = self.buttons[i].0;
-        let end = if i + 1 < self.buttons.len() {
-            self.buttons[i + 1].0
-        } else {
-            self.virtual_button_count
-        };
+        let (start, end) = spans[i];
+        if end <= start {
+            return None;
+        }
+        let visible_i = spans[..i].iter().filter(|(start, end)| end > start).count();
 
-        let left_edge = (start as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64)).floor();
+        let left_edge =
+            (start * virtual_button_width + visible_i as f64 * BUTTON_SPACING_PX as f64).floor();
 
-        let button_width = virtual_button_width
-            + ((end - start - 1) as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64))
-                .floor();
+        let button_width = ((end - start) * virtual_button_width).floor();
 
         if x < left_edge
             || x > (left_edge + button_width)
@@ -1791,14 +2109,17 @@ impl FunctionLayer {
             return None;
         }
 
+        if !self.buttons[i].1.is_visible(None, notification_mgr) {
+            return None;
+        }
+
         Some(i)
     }
 
     // Fraction (0.0..=1.0) of the touch x-position across button `i`'s width.
     fn slider_fraction(&self, width: u16, i: usize, x: f64) -> f64 {
-        let virtual_button_width =
-            (width as i32 - (BUTTON_SPACING_PX * (self.virtual_button_count - 1) as i32)) as f64
-                / self.virtual_button_count as f64;
+        let total_spacing = BUTTON_SPACING_PX as f64 * self.buttons.len().saturating_sub(1) as f64;
+        let virtual_button_width = (width as f64 - total_spacing) / self.virtual_button_count;
 
         let start = self.buttons[i].0;
         let end = if i + 1 < self.buttons.len() {
@@ -1807,10 +2128,9 @@ impl FunctionLayer {
             self.virtual_button_count
         };
 
-        let left_edge = (start as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64)).floor();
-        let button_width = virtual_button_width
-            + ((end - start - 1) as f64 * (virtual_button_width + BUTTON_SPACING_PX as f64))
-                .floor();
+        let left_edge =
+            (start * virtual_button_width + i as f64 * BUTTON_SPACING_PX as f64).floor();
+        let button_width = ((end - start) * virtual_button_width).floor();
 
         ((x - left_edge) / button_width).clamp(0.0, 1.0)
     }
@@ -1992,10 +2312,12 @@ fn real_main(drm: &mut DrmBackend) {
     }
 
     let sysinfo_mgr = SystemInfoManager::new();
+    let mut notification_mgr = NotificationManager::new();
 
     let mut surface =
         ImageSurface::create(Format::ARgb32, db_width as i32, db_height as i32).unwrap();
     let mut normal_layer = layer_index(&layers, &cfg.default_layer).unwrap_or(0);
+    let mut notification_return_layer = normal_layer;
     let mut active_layer = normal_layer;
     let mut needs_complete_redraw = true;
 
@@ -2122,6 +2444,26 @@ fn real_main(drm: &mut DrmBackend) {
             }
         }
 
+        if layers[active_layer].displays_notifications {
+            if notification_mgr.refresh() {
+                needs_complete_redraw = true;
+            }
+            next_timeout_ms = min(next_timeout_ms, 1000);
+        }
+
+        if layers[active_layer]
+            .buttons
+            .iter()
+            .any(|(_, button)| button.hold_started.is_some())
+        {
+            for (_, button) in &mut layers[active_layer].buttons {
+                if button.hold_started.is_some() {
+                    button.changed = true;
+                }
+            }
+            next_timeout_ms = min(next_timeout_ms, 50);
+        }
+
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
             let shift = if cfg.enable_pixel_shift {
                 pixel_shift.get()
@@ -2138,6 +2480,11 @@ fn real_main(drm: &mut DrmBackend) {
             } else {
                 None
             };
+            let notification_mgr_ref = if layers[active_layer].displays_notifications {
+                Some(&notification_mgr)
+            } else {
+                None
+            };
             let clips = layers[active_layer].draw(
                 &cfg,
                 width as i32,
@@ -2147,6 +2494,7 @@ fn real_main(drm: &mut DrmBackend) {
                 needs_complete_redraw,
                 sysinfo_mgr_ref,
                 weather_mgr_ref,
+                notification_mgr_ref,
             );
             let data = surface.data().unwrap();
             drm.map().unwrap().as_mut()[..data.len()].copy_from_slice(&data);
@@ -2208,8 +2556,21 @@ fn real_main(drm: &mut DrmBackend) {
                         TouchEvent::Down(dn) => {
                             let x = dn.x_transformed(width as u32);
                             let y = dn.y_transformed(height as u32);
-                            if let Some(btn) = layers[active_layer].hit(width, height, x, y, None) {
-                                touches.insert(dn.seat_slot(), (active_layer, btn));
+                            let notification_mgr_ref =
+                                if layers[active_layer].displays_notifications {
+                                    Some(&notification_mgr)
+                                } else {
+                                    None
+                                };
+                            if let Some(btn) = layers[active_layer].hit(
+                                width,
+                                height,
+                                x,
+                                y,
+                                None,
+                                notification_mgr_ref,
+                            ) {
+                                touches.insert(dn.seat_slot(), (active_layer, btn, Instant::now()));
                                 match layers[active_layer].buttons[btn].1.slider_kind() {
                                     Some(kind) => {
                                         // Double-tap the volume slider to toggle mute.
@@ -2241,6 +2602,7 @@ fn real_main(drm: &mut DrmBackend) {
                                         layers[active_layer].buttons[btn]
                                             .1
                                             .set_active(&mut uinput, true);
+                                        layers[active_layer].buttons[btn].1.start_hold();
                                     }
                                 }
                             }
@@ -2252,24 +2614,33 @@ fn real_main(drm: &mut DrmBackend) {
                                 continue;
                             }
 
-                            let (layer, btn) = *touches.get(&mtn.seat_slot()).unwrap();
+                            let (layer, btn, _) = *touches.get(&mtn.seat_slot()).unwrap();
                             if layers[layer].buttons[btn].1.slider_kind().is_some() {
                                 // Any drag cancels a pending double-tap.
                                 last_volume_tap = None;
                                 let frac = layers[layer].slider_fraction(width, btn, x);
                                 layers[layer].buttons[btn].1.set_slider_fraction(frac);
                             } else {
+                                let notification_mgr_ref =
+                                    if layers[active_layer].displays_notifications {
+                                        Some(&notification_mgr)
+                                    } else {
+                                        None
+                                    };
                                 let hit = layers[active_layer]
-                                    .hit(width, height, x, y, Some(btn))
+                                    .hit(width, height, x, y, Some(btn), notification_mgr_ref)
                                     .is_some();
                                 layers[layer].buttons[btn].1.set_active(&mut uinput, hit);
+                                if !hit {
+                                    layers[layer].buttons[btn].1.clear_hold();
+                                }
                             }
                         }
                         TouchEvent::Up(up) => {
                             if !touches.contains_key(&up.seat_slot()) {
                                 continue;
                             }
-                            let (layer, btn) = *touches.get(&up.seat_slot()).unwrap();
+                            let (layer, btn, down_at) = *touches.get(&up.seat_slot()).unwrap();
                             if layers[layer].buttons[btn].1.slider_kind().is_some() {
                                 layers[layer].buttons[btn].1.slider_commit();
                                 touches.remove(&up.seat_slot());
@@ -2279,10 +2650,44 @@ fn real_main(drm: &mut DrmBackend) {
                                 .1
                                 .layer_toggle_target()
                                 .map(str::to_string);
+                            let notification_kind =
+                                layers[layer].buttons[btn].1.notification_kind();
                             layers[layer].buttons[btn].1.set_active(&mut uinput, false);
+                            layers[layer].buttons[btn].1.clear_hold();
                             touches.remove(&up.seat_slot());
+                            match notification_kind {
+                                Some(NotificationButton::Back) => {
+                                    normal_layer = notification_return_layer;
+                                    active_layer = normal_layer;
+                                    needs_complete_redraw = true;
+                                }
+                                Some(NotificationButton::Previous) => {
+                                    notification_mgr.previous();
+                                    needs_complete_redraw = true;
+                                }
+                                Some(NotificationButton::Text) => {
+                                    if down_at.elapsed() >= LONG_PRESS_TIMEOUT {
+                                        notification_mgr.dismiss_current();
+                                    } else {
+                                        notification_mgr.invoke_current();
+                                    }
+                                    needs_complete_redraw = true;
+                                }
+                                Some(NotificationButton::Next) => {
+                                    notification_mgr.next();
+                                    needs_complete_redraw = true;
+                                }
+                                Some(NotificationButton::Dnd) => {
+                                    notification_mgr.toggle_dnd();
+                                    needs_complete_redraw = true;
+                                }
+                                Some(NotificationButton::Count) | None => {}
+                            }
                             if let Some(target) = layer_toggle_target {
                                 if let Some(target_layer) = layer_index(&layers, &target) {
+                                    if layers[target_layer].displays_notifications {
+                                        notification_return_layer = normal_layer;
+                                    }
                                     normal_layer = target_layer;
                                     active_layer = normal_layer;
                                     needs_complete_redraw = true;

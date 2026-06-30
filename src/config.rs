@@ -94,6 +94,9 @@ where
         }
 
         fn visit_str<E: de::Error>(self, value: &str) -> Result<Vec<Key>, E> {
+            if value == "DnD" {
+                return Ok(vec![]);
+            }
             Ok(vec![Deserialize::deserialize(
                 de::value::BorrowedStrDeserializer::new(value),
             )?])
@@ -110,35 +113,35 @@ where
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ButtonConfig {
+    pub button: Option<String>,
+    pub option: Option<String>,
     #[serde(alias = "Svg")]
     pub icon: Option<String>,
+    pub icon_active: Option<String>,
     pub text: Option<String>,
     pub theme: Option<String>,
-    pub time: Option<String>,
-    pub battery: Option<String>,
     pub locale: Option<String>,
     pub layer_toggle: Option<String>,
-    pub slider: Option<String>,
-    pub weather: Option<String>,
     pub weather_day: Option<usize>,
-    #[serde(default)]
-    pub cpu_usage: bool,
-    #[serde(default)]
-    pub memory_usage: bool,
-    #[serde(default)]
-    pub active_window: bool,
-    #[serde(default)]
-    pub active_workspace: bool,
     #[serde(deserialize_with = "array_or_single", default)]
     pub action: Vec<Key>,
     pub command: Option<String>,
-    pub stretch: Option<usize>,
+    pub stretch: Option<f64>,
     pub icon_width: Option<i32>,
     pub icon_height: Option<i32>,
     #[serde(default)]
     pub stacked: bool,
     pub font_size: Option<f64>,
     pub max_title_length: Option<usize>,
+    pub children: Option<Vec<ButtonConfig>>,
+}
+
+fn collect_child_layers(buttons: &[ButtonConfig], layers: &mut Vec<(String, Vec<ButtonConfig>)>) {
+    for button in buttons {
+        if let (Some(target), Some(children)) = (&button.layer_toggle, &button.children) {
+            layers.push((target.clone(), children.clone()));
+        }
+    }
 }
 
 fn load_font(name: &str) -> FontFace {
@@ -197,6 +200,16 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
                 panic!("Config must have either SystemInfoLayerKeys or MediaLayerKeys defined")
             }
         };
+    let mut extra_layers = base.layers.unwrap_or_default();
+    let mut child_layers = Vec::new();
+    collect_child_layers(&primary_layer_keys, &mut child_layers);
+    collect_child_layers(&system_info_layer_keys, &mut child_layers);
+    collect_child_layers(&media_layer_keys, &mut child_layers);
+    for keys in extra_layers.values() {
+        collect_child_layers(keys, &mut child_layers);
+    }
+    extra_layers.extend(child_layers);
+
     let show_esc = base
         .show_esc_key
         .unwrap_or_else(|| width >= 2170 && base.auto_add_esc_key.unwrap_or(true));
@@ -209,28 +222,24 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
             layer.insert(
                 0,
                 ButtonConfig {
+                    button: None,
+                    option: None,
                     icon: None,
+                    icon_active: None,
                     text: Some("esc".into()),
                     theme: None,
                     action: vec![Key::Esc],
                     command: None,
                     stretch: None,
-                    time: None,
                     locale: None,
-                    battery: None,
                     layer_toggle: None,
-                    slider: None,
-                    weather: None,
                     weather_day: None,
-                    cpu_usage: false,
-                    memory_usage: false,
-                    active_window: false,
-                    active_workspace: false,
                     icon_width: None,
                     icon_height: None,
                     stacked: false,
                     font_size: None,
                     max_title_length: None,
+                    children: None,
                 },
             );
         }
@@ -240,23 +249,21 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
         FunctionLayer::with_config("FKeys", primary_layer_keys),
         FunctionLayer::with_config("Media", media_layer_keys),
     ];
-    if let Some(extra_layers) = base.layers {
-        for (name, keys) in extra_layers {
-            if matches!(name.as_str(), "SystemInfo" | "FKeys" | "Media") {
-                let key_name = match name.as_str() {
-                    "SystemInfo" => "SystemInfoLayerKeys",
-                    "FKeys" => "PrimaryLayerKeys",
-                    "Media" => "MediaLayerKeys",
-                    _ => unreachable!(),
-                };
-                eprintln!(
-                    "Warning: Layers.{} ignored; use {} for built-in layers",
-                    name, key_name
-                );
-                continue;
-            }
-            layers.push(FunctionLayer::with_config(name, keys));
+    for (name, keys) in extra_layers {
+        if matches!(name.as_str(), "SystemInfo" | "FKeys" | "Media") {
+            let key_name = match name.as_str() {
+                "SystemInfo" => "SystemInfoLayerKeys",
+                "FKeys" => "PrimaryLayerKeys",
+                "Media" => "MediaLayerKeys",
+                _ => unreachable!(),
+            };
+            eprintln!(
+                "Warning: Layers.{} ignored; use {} for built-in layers",
+                name, key_name
+            );
+            continue;
         }
+        layers.push(FunctionLayer::with_config(name, keys));
     }
     let default_layer = base.default_layer.as_deref().unwrap_or("SystemInfo");
     if !layers.iter().any(|layer| layer.name == default_layer) {
