@@ -142,7 +142,7 @@ enum ButtonImage {
     LayerToggle(String, String),
     CpuUsage(Option<Handle>, bool),
     MemoryUsage(Option<Handle>, bool),
-    ActiveWindow(Handle, bool),
+    ActiveWindow(Option<Handle>, bool),
     ActiveWorkspace(Option<Handle>, bool),
     Slider {
         state: Slider,
@@ -547,9 +547,9 @@ impl Button {
             ButtonImage::ActiveWindow(icon, colorize) => {
                 if let Some(mgr) = sysinfo_mgr {
                     let (text, now_playing) = mgr.get_titlebar_text();
-                    if now_playing {
+                    if now_playing && icon.is_some() {
                         ButtonContent::IconWithClippedText {
-                            icon: icon.clone(),
+                            icon: icon.clone().unwrap(),
                             icon_color: now_playing_icon_color(*colorize),
                             text,
                         }
@@ -1803,7 +1803,7 @@ impl Button {
             action,
             active: false,
             changed: false,
-            image: ButtonImage::ActiveWindow(icon, colorize),
+            image: ButtonImage::ActiveWindow(Some(icon), colorize),
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
@@ -3419,13 +3419,6 @@ mod tests {
 
     #[test]
     fn active_window_button_is_hittable_for_toggle() {
-        let play = if let ButtonImage::Svg(svg) =
-            try_load_image("play", None::<&str>, DEFAULT_ICON_SIZE, DEFAULT_ICON_SIZE).unwrap()
-        {
-            svg
-        } else {
-            panic!("failed to load play icon");
-        };
         let layer = FunctionLayer {
             name: "Titlebar".to_string(),
             displays_time: false,
@@ -3434,7 +3427,7 @@ mod tests {
             displays_slider: false,
             displays_weather: false,
             displays_notifications: false,
-            buttons: vec![(0.0, test_button(ButtonImage::ActiveWindow(play, false)))],
+            buttons: vec![(0.0, test_button(ButtonImage::ActiveWindow(None, false)))],
             virtual_button_count: 1.0,
             faster_refresh: false,
         };
