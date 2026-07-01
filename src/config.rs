@@ -110,7 +110,7 @@ where
     deserializer.deserialize_any(ArrayOrSingle)
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct ButtonConfig {
     pub button: Option<String>,
@@ -131,15 +131,48 @@ pub struct ButtonConfig {
     pub icon_height: Option<i32>,
     #[serde(default)]
     pub stacked: bool,
+    #[serde(default)]
+    pub colorize: bool,
     pub font_size: Option<f64>,
     pub max_title_length: Option<usize>,
     pub children: Option<Vec<ButtonConfig>>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn children_inherit_parent_colorize() {
+        let parent = ButtonConfig {
+            layer_toggle: Some("Child".to_string()),
+            colorize: true,
+            children: Some(vec![ButtonConfig {
+                button: Some("Weather".to_string()),
+                ..ButtonConfig::default()
+            }]),
+            ..ButtonConfig::default()
+        };
+        let mut layers = Vec::new();
+
+        collect_child_layers(&[parent], &mut layers);
+
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].0, "Child");
+        assert!(layers[0].1[0].colorize);
+    }
+}
+
 fn collect_child_layers(buttons: &[ButtonConfig], layers: &mut Vec<(String, Vec<ButtonConfig>)>) {
     for button in buttons {
         if let (Some(target), Some(children)) = (&button.layer_toggle, &button.children) {
-            layers.push((target.clone(), children.clone()));
+            let mut children = children.clone();
+            if button.colorize {
+                for child in &mut children {
+                    child.colorize = true;
+                }
+            }
+            layers.push((target.clone(), children));
         }
     }
 }
@@ -237,6 +270,7 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
                     icon_width: None,
                     icon_height: None,
                     stacked: false,
+                    colorize: false,
                     font_size: None,
                     max_title_length: None,
                     children: None,

@@ -23,6 +23,24 @@ pub struct NotificationManager {
 }
 
 impl NotificationManager {
+    #[cfg(test)]
+    pub(crate) fn with_count(count: usize) -> NotificationManager {
+        NotificationManager {
+            notifications: (0..count)
+                .map(|id| Notification {
+                    id: id as u64,
+                    app: "app".to_string(),
+                    summary: format!("summary {id}"),
+                    body: String::new(),
+                    has_actions: false,
+                })
+                .collect(),
+            index: 0,
+            dnd: false,
+            last_refresh: Instant::now(),
+        }
+    }
+
     pub fn new() -> NotificationManager {
         let mut mgr = NotificationManager {
             notifications: Vec::new(),
@@ -132,6 +150,32 @@ impl NotificationManager {
             .status();
         self.last_refresh = Instant::now() - REFRESH;
         self.refresh();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn navigation_requires_multiple_notifications() {
+        assert!(!NotificationManager::with_count(0).can_navigate());
+        assert!(!NotificationManager::with_count(1).can_navigate());
+        assert!(NotificationManager::with_count(2).can_navigate());
+    }
+
+    #[test]
+    fn next_and_previous_clamp_to_available_notifications() {
+        let mut mgr = NotificationManager::with_count(2);
+        assert_eq!(mgr.current_text(), "app: summary 0");
+        mgr.next();
+        assert_eq!(mgr.current_text(), "app: summary 1");
+        mgr.next();
+        assert_eq!(mgr.current_text(), "app: summary 1");
+        mgr.previous();
+        assert_eq!(mgr.current_text(), "app: summary 0");
+        mgr.previous();
+        assert_eq!(mgr.current_text(), "app: summary 0");
     }
 }
 

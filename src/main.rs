@@ -109,11 +109,11 @@ impl WeatherIcons {
         }
         WeatherIcons { icons }
     }
-    fn pick(&self, name: &str) -> Option<Handle> {
+    fn pick(&self, name: &str) -> Option<(&'static str, Handle)> {
         self.icons
-            .get(name)
-            .or_else(|| self.icons.get("weather_cloudy"))
-            .cloned()
+            .get_key_value(name)
+            .or_else(|| self.icons.get_key_value("weather_cloudy"))
+            .map(|(name, handle)| (*name, handle.clone()))
     }
 }
 
@@ -138,19 +138,20 @@ enum ButtonImage {
     Svg(Handle),
     Bitmap(ImageSurface),
     Time(Vec<ChronoItem<'static>>, Locale),
-    Battery(String, BatteryIconMode, BatteryImages),
+    Battery(String, BatteryIconMode, BatteryImages, bool),
     LayerToggle(String, String),
-    CpuUsage(Option<Handle>),
-    MemoryUsage(Option<Handle>),
+    CpuUsage(Option<Handle>, bool),
+    MemoryUsage(Option<Handle>, bool),
     ActiveWindow,
     ActiveWorkspace(Option<Handle>),
     Slider {
         state: Slider,
         icon: Option<Handle>,
         muted_icon: Option<Handle>,
+        colorize: bool,
     },
-    WeatherCurrent(WeatherIcons),
-    WeatherForecast(usize, WeatherIcons),
+    WeatherCurrent(WeatherIcons, bool),
+    WeatherForecast(usize, WeatherIcons, bool),
     Notification(NotificationButton, Option<Handle>, Option<Handle>),
     Spacer,
 }
@@ -183,6 +184,42 @@ fn normalize_time_option(option: String) -> String {
         "12h" => "12hr".to_string(),
         _ => option,
     }
+}
+
+fn usage_color(percent: f64) -> (f64, f64, f64) {
+    match percent {
+        p if p <= 10.0 => (1.0, 1.0, 1.0),
+        p if p <= 25.0 => (1.0, 0.85, 0.0),
+        p if p <= 55.0 => (1.0, 0.45, 0.0),
+        p if p <= 75.0 => (0.55, 0.25, 1.0),
+        _ => (1.0, 0.0, 0.0),
+    }
+}
+
+fn battery_color(percent: u32) -> (f64, f64, f64) {
+    match percent {
+        0..=10 => (1.0, 0.0, 0.0),
+        11..=25 => (0.55, 0.25, 1.0),
+        26..=50 => (1.0, 0.45, 0.0),
+        51..=75 => (0.0, 0.45, 1.0),
+        _ => (0.0, 0.8, 0.0),
+    }
+}
+
+fn weather_icon_color(icon: &str) -> Option<(f64, f64, f64)> {
+    match icon {
+        "weather_sunny" | "weather_moon" => Some((1.0, 0.85, 0.0)),
+        "weather_rainy" => Some((0.0, 0.45, 1.0)),
+        _ => None,
+    }
+}
+
+fn slider_icon_color(kind: SliderKind, percent: u32) -> Option<(f64, f64, f64)> {
+    if kind == SliderKind::Volume {
+        return None;
+    }
+    let t = (percent as f64 / 100.0).clamp(0.0, 1.0);
+    Some((1.0, 1.0 - 0.55 * t, 1.0 - t))
 }
 
 fn layer_index(layers: &[FunctionLayer], name: &str) -> Option<usize> {
@@ -218,6 +255,14 @@ enum ButtonContent {
         icon_size: f64,
         text: String,
     },
+    ColoredIconWithText {
+        icon: Handle,
+        icon_size: f64,
+        icon_color: (f64, f64, f64),
+        overlay_icon: Option<Handle>,
+        overlay_color: (f64, f64, f64),
+        text: String,
+    },
     IconWithCenteredText {
         icon: Handle,
         icon_size: f64,
@@ -231,6 +276,15 @@ enum ButtonContent {
         lines: Vec<String>,
         emphasize_first: bool,
     },
+    ColoredIconWithMultilineText {
+        icon: Handle,
+        icon_size: f64,
+        icon_color: (f64, f64, f64),
+        overlay_icon: Option<Handle>,
+        overlay_color: (f64, f64, f64),
+        lines: Vec<String>,
+        emphasize_first: bool,
+    },
     // Clipped text (for window titles that might overflow)
     ClippedText(String),
     // Multiple centered lines of text (no icon)
@@ -240,6 +294,7 @@ enum ButtonContent {
         fraction: f64,
         muted: bool,
         percent: u32,
+        icon_color: Option<(f64, f64, f64)>,
         icon: Option<Handle>,
         muted_icon: Option<Handle>,
     },
@@ -289,11 +344,11 @@ impl Button {
                     ButtonContent::SimpleText(formatted_time)
                 }
             }
-            ButtonImage::Battery(battery, battery_mode, icons) => {
+            ButtonImage::Battery(battery, battery_mode, icons, colorize) => {
                 let (capacity, state) = get_battery_state(battery);
                 let icon = if battery_mode.should_draw_icon() {
                     Some(match state {
-                        BatteryState::Charging => match capacity {
+                        BatteryState::Charging if !*colorize => match capacity {
                             0..=20 => &icons.charging[0],
                             21..=30 => &icons.charging[1],
                             31..=50 => &icons.charging[2],
@@ -329,11 +384,24 @@ impl Button {
                     };
 
                     if let Some(icon_handle) = icon {
-                        ButtonContent::IconWithMultilineText {
-                            icon: icon_handle.clone(),
-                            icon_size: DEFAULT_ICON_SIZE as f64,
-                            lines,
-                            emphasize_first: false,
+                        if *colorize {
+                            ButtonContent::ColoredIconWithMultilineText {
+                                icon: icon_handle.clone(),
+                                icon_size: DEFAULT_ICON_SIZE as f64,
+                                icon_color: battery_color(capacity),
+                                overlay_icon: (state == BatteryState::Charging)
+                                    .then(|| icons.bolt.clone()),
+                                overlay_color: (1.0, 0.85, 0.0),
+                                lines,
+                                emphasize_first: false,
+                            }
+                        } else {
+                            ButtonContent::IconWithMultilineText {
+                                icon: icon_handle.clone(),
+                                icon_size: DEFAULT_ICON_SIZE as f64,
+                                lines,
+                                emphasize_first: false,
+                            }
                         }
                     } else {
                         ButtonContent::SimpleText(lines.join(" "))
@@ -345,10 +413,22 @@ impl Button {
                         } else {
                             format!("{:.0}%", capacity)
                         };
-                        ButtonContent::IconWithText {
-                            icon: icon_handle.clone(),
-                            icon_size: DEFAULT_ICON_SIZE as f64,
-                            text,
+                        if *colorize {
+                            ButtonContent::ColoredIconWithText {
+                                icon: icon_handle.clone(),
+                                icon_size: DEFAULT_ICON_SIZE as f64,
+                                icon_color: battery_color(capacity),
+                                overlay_icon: (state == BatteryState::Charging)
+                                    .then(|| icons.bolt.clone()),
+                                overlay_color: (1.0, 0.85, 0.0),
+                                text,
+                            }
+                        } else {
+                            ButtonContent::IconWithText {
+                                icon: icon_handle.clone(),
+                                icon_size: DEFAULT_ICON_SIZE as f64,
+                                text,
+                            }
                         }
                     } else {
                         ButtonContent::Icon(icon_handle.clone(), DEFAULT_ICON_SIZE as f64)
@@ -362,27 +442,44 @@ impl Button {
                     ButtonContent::SimpleText(text)
                 }
             }
-            ButtonImage::CpuUsage(icon) => {
+            ButtonImage::CpuUsage(icon, colorize) => {
                 if let Some(mgr) = sysinfo_mgr {
+                    let usage = mgr.get_cpu_usage();
                     if let Some(svg) = icon {
-                        let cpu_text = format!("{:.0}%", mgr.get_cpu_usage());
-                        ButtonContent::IconWithText {
-                            icon: svg.clone(),
-                            icon_size: self.icon_width.min(self.icon_height),
-                            text: cpu_text,
+                        let cpu_text = format!("{:.0}%", usage);
+                        if *colorize {
+                            ButtonContent::ColoredIconWithText {
+                                icon: svg.clone(),
+                                icon_size: self.icon_width.min(self.icon_height),
+                                icon_color: usage_color(usage as f64),
+                                overlay_icon: None,
+                                overlay_color: (1.0, 1.0, 1.0),
+                                text: cpu_text,
+                            }
+                        } else {
+                            ButtonContent::IconWithText {
+                                icon: svg.clone(),
+                                icon_size: self.icon_width.min(self.icon_height),
+                                text: cpu_text,
+                            }
                         }
                     } else {
-                        let cpu_text = format!("CPU {:.1}%", mgr.get_cpu_usage());
+                        let cpu_text = format!("CPU {:.1}%", usage);
                         ButtonContent::SimpleText(cpu_text)
                     }
                 } else {
                     ButtonContent::Empty
                 }
             }
-            ButtonImage::MemoryUsage(icon) => {
+            ButtonImage::MemoryUsage(icon, colorize) => {
                 if let Some(mgr) = sysinfo_mgr {
                     if let Some(svg) = icon {
                         let (used, total) = mgr.get_memory_usage();
+                        let usage = if total > 0 {
+                            (used as f64 / total as f64) * 100.0
+                        } else {
+                            0.0
+                        };
                         if self.stacked {
                             let lines = vec![
                                 format!("used: {:.1}G", used as f64 / 1024.0 / 1024.0 / 1024.0),
@@ -400,10 +497,21 @@ impl Button {
                                 used as f64 / 1024.0 / 1024.0 / 1024.0,
                                 total as f64 / 1024.0 / 1024.0 / 1024.0
                             );
-                            ButtonContent::IconWithText {
-                                icon: svg.clone(),
-                                icon_size: self.icon_width.min(self.icon_height),
-                                text: mem_text,
+                            if *colorize {
+                                ButtonContent::ColoredIconWithText {
+                                    icon: svg.clone(),
+                                    icon_size: self.icon_width.min(self.icon_height),
+                                    icon_color: usage_color(usage),
+                                    overlay_icon: None,
+                                    overlay_color: (1.0, 1.0, 1.0),
+                                    text: mem_text,
+                                }
+                            } else {
+                                ButtonContent::IconWithText {
+                                    icon: svg.clone(),
+                                    icon_size: self.icon_width.min(self.icon_height),
+                                    text: mem_text,
+                                }
                             }
                         }
                     } else {
@@ -451,14 +559,18 @@ impl Button {
                 state,
                 icon,
                 muted_icon,
+                colorize,
             } => ButtonContent::SliderBar {
                 fraction: state.value(),
                 muted: state.muted(),
                 percent: state.percent(),
+                icon_color: colorize
+                    .then(|| slider_icon_color(state.kind(), state.percent()))
+                    .flatten(),
                 icon: icon.clone(),
                 muted_icon: muted_icon.clone(),
             },
-            ButtonImage::WeatherCurrent(icons) => {
+            ButtonImage::WeatherCurrent(icons, colorize) => {
                 if let Some(mgr) = weather_mgr {
                     let d = mgr.data();
                     if d.available {
@@ -466,11 +578,22 @@ impl Button {
                             .current_temp
                             .map(|t| format!("{:.0}{}", t, d.unit))
                             .unwrap_or_else(|| "--".to_string());
-                        if let Some(icon) = icons.pick(&d.current_icon) {
-                            ButtonContent::IconWithText {
-                                icon,
-                                icon_size: DEFAULT_ICON_SIZE as f64,
-                                text: temp,
+                        if let Some((icon_name, icon)) = icons.pick(&d.current_icon) {
+                            if *colorize && weather_icon_color(icon_name).is_some() {
+                                ButtonContent::ColoredIconWithText {
+                                    icon,
+                                    icon_size: DEFAULT_ICON_SIZE as f64,
+                                    icon_color: weather_icon_color(icon_name).unwrap(),
+                                    overlay_icon: None,
+                                    overlay_color: (1.0, 1.0, 1.0),
+                                    text: temp,
+                                }
+                            } else {
+                                ButtonContent::IconWithText {
+                                    icon,
+                                    icon_size: DEFAULT_ICON_SIZE as f64,
+                                    text: temp,
+                                }
                             }
                         } else {
                             ButtonContent::SimpleText(temp)
@@ -482,7 +605,7 @@ impl Button {
                     ButtonContent::Empty
                 }
             }
-            ButtonImage::WeatherForecast(day, icons) => {
+            ButtonImage::WeatherForecast(day, icons, colorize) => {
                 if let Some(mgr) = weather_mgr {
                     let d = mgr.data();
                     if let Some(forecast) = d.days.get(*day) {
@@ -500,12 +623,24 @@ impl Button {
                         if !forecast.desc.is_empty() {
                             lines.push(forecast.desc.clone());
                         }
-                        if let Some(icon) = icons.pick(&forecast.icon) {
-                            ButtonContent::IconWithMultilineText {
-                                icon,
-                                icon_size: DEFAULT_ICON_SIZE as f64,
-                                lines,
-                                emphasize_first: true,
+                        if let Some((icon_name, icon)) = icons.pick(&forecast.icon) {
+                            if *colorize && weather_icon_color(icon_name).is_some() {
+                                ButtonContent::ColoredIconWithMultilineText {
+                                    icon,
+                                    icon_size: DEFAULT_ICON_SIZE as f64,
+                                    icon_color: weather_icon_color(icon_name).unwrap(),
+                                    overlay_icon: None,
+                                    overlay_color: (1.0, 1.0, 1.0),
+                                    lines,
+                                    emphasize_first: true,
+                                }
+                            } else {
+                                ButtonContent::IconWithMultilineText {
+                                    icon,
+                                    icon_size: DEFAULT_ICON_SIZE as f64,
+                                    lines,
+                                    emphasize_first: true,
+                                }
                             }
                         } else {
                             ButtonContent::MultilineText(lines)
@@ -633,6 +768,30 @@ impl Button {
                     c.show_text(&text).unwrap();
                 }
             }
+            ButtonContent::ColoredIconWithText {
+                icon,
+                icon_size,
+                icon_color,
+                overlay_icon,
+                overlay_color,
+                text,
+            } => {
+                let extents = c.text_extents(&text).unwrap();
+                let spacing = 4.0;
+                let total_width = icon_size + spacing + extents.width();
+                let start_x =
+                    button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+                let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+                render_tinted_icon(c, &icon, start_x, icon_y, icon_size, icon_color);
+                if let Some(overlay_icon) = overlay_icon {
+                    render_tinted_icon(c, &overlay_icon, start_x, icon_y, icon_size, overlay_color);
+                }
+                c.move_to(
+                    start_x + icon_size + spacing,
+                    y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                );
+                c.show_text(&text).unwrap();
+            }
             ButtonContent::IconWithCenteredText {
                 icon,
                 icon_size,
@@ -711,6 +870,59 @@ impl Button {
                 }
                 c.set_font_size(base_font_size);
             }
+            ButtonContent::ColoredIconWithMultilineText {
+                icon,
+                icon_size,
+                icon_color,
+                overlay_icon,
+                overlay_color,
+                lines,
+                emphasize_first,
+            } => {
+                let spacing = 4.0;
+                let text_spacing = 2.0;
+                let base_font_size = c.font_matrix().xx();
+                let line_size = |i: usize| {
+                    if emphasize_first && i == 0 {
+                        base_font_size + 2.0
+                    } else {
+                        base_font_size
+                    }
+                };
+                let mut line_extents = Vec::new();
+                let mut max_width: f64 = 0.0;
+                let mut total_height: f64 = 0.0;
+                for (i, line) in lines.iter().enumerate() {
+                    c.set_font_size(line_size(i));
+                    let extents = c.text_extents(line).unwrap();
+                    max_width = max_width.max(extents.width());
+                    total_height += extents.height();
+                    if i < lines.len() - 1 {
+                        total_height += text_spacing;
+                    }
+                    line_extents.push(extents);
+                }
+                let total_width = icon_size + spacing + max_width;
+                let start_x =
+                    button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+                let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+                render_tinted_icon(c, &icon, start_x, icon_y, icon_size, icon_color);
+                if let Some(overlay_icon) = overlay_icon {
+                    render_tinted_icon(c, &overlay_icon, start_x, icon_y, icon_size, overlay_color);
+                }
+                let text_start_y = y_shift + (height as f64 / 2.0 - total_height / 2.0).round();
+                let text_x = start_x + icon_size + spacing;
+                let mut current_y = text_start_y;
+                for (i, (line, extents)) in lines.iter().zip(line_extents.iter()).enumerate() {
+                    c.set_font_size(line_size(i));
+                    c.move_to(text_x, current_y + extents.height());
+                    c.show_text(line).unwrap();
+                    if i < lines.len() - 1 {
+                        current_y += extents.height() + text_spacing;
+                    }
+                }
+                c.set_font_size(base_font_size);
+            }
             ButtonContent::ClippedText(text) => {
                 let extents = c.text_extents(&text).unwrap();
 
@@ -759,6 +971,7 @@ impl Button {
                 fraction,
                 muted,
                 percent,
+                icon_color,
                 icon,
                 muted_icon,
             } => {
@@ -775,8 +988,17 @@ impl Button {
                 let mut track_left = button_left_edge + pad;
                 if let Some(svg) = left_icon {
                     let iy = cy - icon_size / 2.0;
-                    svg.render_document(c, &Rectangle::new(track_left, iy, icon_size, icon_size))
+                    if muted {
+                        render_tinted_icon(c, svg, track_left, iy, icon_size, (1.0, 0.0, 0.0));
+                    } else if let Some(color) = icon_color {
+                        render_tinted_icon(c, svg, track_left, iy, icon_size, color);
+                    } else {
+                        svg.render_document(
+                            c,
+                            &Rectangle::new(track_left, iy, icon_size, icon_size),
+                        )
                         .unwrap();
+                    }
                     track_left += icon_size + 10.0;
                 }
 
@@ -822,6 +1044,26 @@ fn try_load_svg(path: &str) -> Result<ButtonImage> {
     Ok(ButtonImage::Svg(
         Handle::from_file(path).map_err(|_| anyhow!("failed to load image"))?,
     ))
+}
+
+fn render_tinted_icon(
+    c: &Context,
+    icon: &Handle,
+    x: f64,
+    y: f64,
+    size: f64,
+    (r, g, b): (f64, f64, f64),
+) {
+    let surface =
+        ImageSurface::create(Format::ARgb32, size.ceil() as i32, size.ceil() as i32).unwrap();
+    let icon_context = Context::new(&surface).unwrap();
+    icon.render_document(&icon_context, &Rectangle::new(0.0, 0.0, size, size))
+        .unwrap();
+
+    c.save().unwrap();
+    c.set_source_rgb(r, g, b);
+    c.mask_surface(&surface, x, y).unwrap();
+    c.restore().unwrap();
 }
 
 fn try_load_png(path: impl AsRef<Path>, icon_width: i32, icon_height: i32) -> Result<ButtonImage> {
@@ -1040,7 +1282,7 @@ impl Button {
             Button::new_notification(kind, icon, active_icon)
         } else if matches!(button_name, Some("Slider" | "slider")) {
             match option.as_deref().and_then(SliderKind::parse) {
-                Some(kind) => Button::new_slider(kind, cfg.theme.as_deref()),
+                Some(kind) => Button::new_slider(kind, cfg.theme.as_deref(), cfg.colorize),
                 None => {
                     eprintln!(
                         "Unknown Slider option '{}'; expected display_brightness, keyboard_backlight, or volume",
@@ -1051,10 +1293,12 @@ impl Button {
             }
         } else if matches!(button_name, Some("Weather" | "weather")) {
             match option.as_deref().unwrap_or("current") {
-                "current" => Button::new_weather_current(cfg.theme.as_deref()),
-                "forecast" => {
-                    Button::new_weather_forecast(cfg.weather_day.unwrap_or(0), cfg.theme.as_deref())
-                }
+                "current" => Button::new_weather_current(cfg.theme.as_deref(), cfg.colorize),
+                "forecast" => Button::new_weather_forecast(
+                    cfg.weather_day.unwrap_or(0),
+                    cfg.theme.as_deref(),
+                    cfg.colorize,
+                ),
                 weather => {
                     eprintln!(
                         "Unknown Weather option '{}'; expected current or forecast",
@@ -1071,7 +1315,14 @@ impl Button {
         } else if matches!(button_name, Some("Battery" | "battery")) {
             let battery_mode = option.unwrap_or_else(|| "percentage".to_string());
             if let Some(battery) = find_battery_device() {
-                Button::new_battery(cfg.action, cfg.command, battery, battery_mode, cfg.theme)
+                Button::new_battery(
+                    cfg.action,
+                    cfg.command,
+                    battery,
+                    battery_mode,
+                    cfg.theme,
+                    cfg.colorize,
+                )
             } else {
                 Button::new_text("Battery N/A".to_string(), cfg.action)
             }
@@ -1083,6 +1334,7 @@ impl Button {
                 cfg.theme.clone(),
                 cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
                 cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
+                cfg.colorize,
             )
         } else if matches!(button_name, Some("MemoryUsage" | "Memory" | "memory")) {
             Button::new_memory_usage(
@@ -1092,6 +1344,7 @@ impl Button {
                 cfg.theme,
                 cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
                 cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
+                cfg.colorize,
             )
         } else if matches!(button_name, Some("ActiveWindow" | "active_window")) {
             Button::new_active_window(cfg.action)
@@ -1126,7 +1379,7 @@ impl Button {
         button.toggle_target = toggle_target;
         button
     }
-    fn new_slider(kind: SliderKind, theme: Option<&str>) -> Button {
+    fn new_slider(kind: SliderKind, theme: Option<&str>, colorize: bool) -> Button {
         let (icon_name, muted_name) = match kind {
             SliderKind::DisplayBrightness => ("brightness_low", None),
             SliderKind::KeyboardBacklight => ("backlight_low", None),
@@ -1146,6 +1399,7 @@ impl Button {
                 state: Slider::new(kind),
                 icon: load(icon_name),
                 muted_icon: muted_name.and_then(load),
+                colorize,
             },
             command: None,
             icon_width: 0.0,
@@ -1157,12 +1411,12 @@ impl Button {
             hold_started: None,
         }
     }
-    fn new_weather_current(theme: Option<&str>) -> Button {
+    fn new_weather_current(theme: Option<&str>, colorize: bool) -> Button {
         Button {
             action: vec![],
             active: false,
             changed: false,
-            image: ButtonImage::WeatherCurrent(WeatherIcons::load(theme)),
+            image: ButtonImage::WeatherCurrent(WeatherIcons::load(theme), colorize),
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
@@ -1173,12 +1427,12 @@ impl Button {
             hold_started: None,
         }
     }
-    fn new_weather_forecast(day: usize, theme: Option<&str>) -> Button {
+    fn new_weather_forecast(day: usize, theme: Option<&str>, colorize: bool) -> Button {
         Button {
             action: vec![],
             active: false,
             changed: false,
-            image: ButtonImage::WeatherForecast(day, WeatherIcons::load(theme)),
+            image: ButtonImage::WeatherForecast(day, WeatherIcons::load(theme), colorize),
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
@@ -1295,6 +1549,7 @@ impl Button {
         battery: String,
         battery_mode: String,
         theme: Option<impl AsRef<str>>,
+        colorize: bool,
     ) -> Button {
         let bolt = Self::load_battery_image("bolt", theme.as_ref());
         let mut plain = Vec::new();
@@ -1340,6 +1595,7 @@ impl Button {
                     bolt,
                     charging,
                 },
+                colorize,
             ),
             command,
             icon_width: 0.0,
@@ -1396,6 +1652,7 @@ impl Button {
         theme: Option<impl AsRef<str>>,
         icon_width: i32,
         icon_height: i32,
+        colorize: bool,
     ) -> Button {
         let icon_handle = icon.and_then(|i| {
             try_load_image(i, theme, icon_width, icon_height)
@@ -1414,7 +1671,7 @@ impl Button {
             action,
             active: false,
             changed: false,
-            image: ButtonImage::CpuUsage(icon_handle),
+            image: ButtonImage::CpuUsage(icon_handle, colorize),
             command,
             icon_width: w,
             icon_height: h,
@@ -1432,6 +1689,7 @@ impl Button {
         theme: Option<impl AsRef<str>>,
         icon_width: i32,
         icon_height: i32,
+        colorize: bool,
     ) -> Button {
         let icon_handle = icon.and_then(|i| {
             try_load_image(i, theme, icon_width, icon_height)
@@ -1450,7 +1708,7 @@ impl Button {
             action,
             active: false,
             changed: false,
-            image: ButtonImage::MemoryUsage(icon_handle),
+            image: ButtonImage::MemoryUsage(icon_handle, colorize),
             command,
             icon_width: w,
             icon_height: h,
@@ -1524,8 +1782,8 @@ impl Button {
                     _ => false,
                 }
             }),
-            ButtonImage::CpuUsage(_)
-            | ButtonImage::MemoryUsage(_)
+            ButtonImage::CpuUsage(_, _)
+            | ButtonImage::MemoryUsage(_, _)
             | ButtonImage::ActiveWindow
             | ButtonImage::ActiveWorkspace(_)
             | ButtonImage::Notification(_, _, _) => true,
@@ -1555,10 +1813,10 @@ impl Button {
     {
         // Debug: log all set_active calls
         let button_type = match &self.image {
-            ButtonImage::CpuUsage(_) => "CPU",
-            ButtonImage::MemoryUsage(_) => "Memory",
+            ButtonImage::CpuUsage(_, _) => "CPU",
+            ButtonImage::MemoryUsage(_, _) => "Memory",
             ButtonImage::ActiveWorkspace(_) => "Workspace",
-            ButtonImage::Battery(_, _, _) => "Battery",
+            ButtonImage::Battery(_, _, _, _) => "Battery",
             _ => "Other",
         };
         eprintln!(
@@ -1744,7 +2002,7 @@ impl Button {
         }
     }
     fn set_background_color(&self, c: &Context, color: f64) {
-        if let ButtonImage::Battery(battery, _, _) = &self.image {
+        if let ButtonImage::Battery(battery, _, _, _) = &self.image {
             let (_, state) = get_battery_state(battery);
             match state {
                 BatteryState::NotCharging => c.set_source_rgb(color, color, color),
@@ -1753,6 +2011,23 @@ impl Button {
             }
         } else {
             c.set_source_rgb(color, color, color);
+        }
+    }
+
+    fn set_background_color_with_notifications(
+        &self,
+        c: &Context,
+        color: f64,
+        notification_mgr: Option<&NotificationManager>,
+    ) {
+        if matches!(self.notification_kind(), Some(NotificationButton::Dnd))
+            && notification_mgr
+                .map(|mgr| mgr.dnd_enabled())
+                .unwrap_or(false)
+        {
+            c.set_source_rgb(color, 0.0, 0.0);
+        } else {
+            self.set_background_color(c, color);
         }
     }
 }
@@ -1966,7 +2241,7 @@ impl FunctionLayer {
                 c.fill().unwrap();
             }
             if button_visible {
-                button.set_background_color(&c, color);
+                button.set_background_color_with_notifications(&c, color, notification_mgr);
                 // draw box with rounded corners
                 c.new_sub_path();
                 let left = left_edge + radius;
@@ -2405,7 +2680,7 @@ fn real_main(drm: &mut DrmBackend) {
         }
         if layers[active_layer].displays_battery {
             for button in &mut layers[active_layer].buttons {
-                if let ButtonImage::Battery(_, _, _) = button.1.image {
+                if let ButtonImage::Battery(_, _, _, _) = button.1.image {
                     button.1.changed = true;
                 }
             }
@@ -2414,8 +2689,8 @@ fn real_main(drm: &mut DrmBackend) {
         if layers[active_layer].displays_sysinfo {
             for button in &mut layers[active_layer].buttons {
                 match button.1.image {
-                    ButtonImage::CpuUsage(_)
-                    | ButtonImage::MemoryUsage(_)
+                    ButtonImage::CpuUsage(_, _)
+                    | ButtonImage::MemoryUsage(_, _)
                     | ButtonImage::ActiveWindow
                     | ButtonImage::ActiveWorkspace(_) => {
                         button.1.changed = true;
@@ -2437,7 +2712,7 @@ fn real_main(drm: &mut DrmBackend) {
             for button in &mut layers[active_layer].buttons {
                 if matches!(
                     button.1.image,
-                    ButtonImage::WeatherCurrent(_) | ButtonImage::WeatherForecast(_, _)
+                    ButtonImage::WeatherCurrent(_, _) | ButtonImage::WeatherForecast(_, _, _)
                 ) {
                     button.1.changed = true;
                 }
@@ -2703,5 +2978,192 @@ fn real_main(drm: &mut DrmBackend) {
             }
         }
         backlight.update_backlight(&cfg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_button(image: ButtonImage) -> Button {
+        Button {
+            image,
+            changed: false,
+            active: false,
+            action: vec![],
+            command: None,
+            icon_width: 0.0,
+            icon_height: 0.0,
+            stacked: false,
+            font_size: None,
+            max_title_length: None,
+            toggle_target: None,
+            hold_started: None,
+        }
+    }
+
+    fn notification_layer() -> FunctionLayer {
+        FunctionLayer {
+            name: "Notifications".to_string(),
+            displays_time: false,
+            displays_battery: false,
+            displays_sysinfo: false,
+            displays_slider: false,
+            displays_weather: false,
+            displays_notifications: true,
+            buttons: vec![
+                (
+                    0.0,
+                    test_button(ButtonImage::Notification(
+                        NotificationButton::Previous,
+                        None,
+                        None,
+                    )),
+                ),
+                (
+                    1.0,
+                    test_button(ButtonImage::Notification(
+                        NotificationButton::Text,
+                        None,
+                        None,
+                    )),
+                ),
+                (
+                    9.0,
+                    test_button(ButtonImage::Notification(
+                        NotificationButton::Next,
+                        None,
+                        None,
+                    )),
+                ),
+                (
+                    10.0,
+                    test_button(ButtonImage::Notification(
+                        NotificationButton::Dnd,
+                        None,
+                        None,
+                    )),
+                ),
+            ],
+            virtual_button_count: 11.0,
+            faster_refresh: false,
+        }
+    }
+
+    #[test]
+    fn time_option_aliases_normalize() {
+        assert_eq!(normalize_time_option("24h".to_string()), "24hr");
+        assert_eq!(normalize_time_option("12h".to_string()), "12hr");
+        assert_eq!(normalize_time_option("%H:%M".to_string()), "%H:%M");
+    }
+
+    #[test]
+    fn notification_aliases_map_to_buttons() {
+        assert!(matches!(
+            notification_button_alias("notifications"),
+            Some(NotificationButton::Count)
+        ));
+        assert!(matches!(
+            notification_button_alias("PreviousLayer"),
+            Some(NotificationButton::Back)
+        ));
+        assert!(matches!(
+            notification_button_alias("DnDNotification"),
+            Some(NotificationButton::Dnd)
+        ));
+        assert!(notification_button_alias("nope").is_none());
+    }
+
+    #[test]
+    fn usage_color_thresholds_match_configured_ranges() {
+        assert_eq!(usage_color(10.0), (1.0, 1.0, 1.0));
+        assert_eq!(usage_color(11.0), (1.0, 0.85, 0.0));
+        assert_eq!(usage_color(25.0), (1.0, 0.85, 0.0));
+        assert_eq!(usage_color(26.0), (1.0, 0.45, 0.0));
+        assert_eq!(usage_color(55.0), (1.0, 0.45, 0.0));
+        assert_eq!(usage_color(56.0), (0.55, 0.25, 1.0));
+        assert_eq!(usage_color(75.0), (0.55, 0.25, 1.0));
+        assert_eq!(usage_color(76.0), (1.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn battery_color_thresholds_match_configured_ranges() {
+        assert_eq!(battery_color(10), (1.0, 0.0, 0.0));
+        assert_eq!(battery_color(11), (0.55, 0.25, 1.0));
+        assert_eq!(battery_color(25), (0.55, 0.25, 1.0));
+        assert_eq!(battery_color(26), (1.0, 0.45, 0.0));
+        assert_eq!(battery_color(50), (1.0, 0.45, 0.0));
+        assert_eq!(battery_color(51), (0.0, 0.45, 1.0));
+        assert_eq!(battery_color(75), (0.0, 0.45, 1.0));
+        assert_eq!(battery_color(76), (0.0, 0.8, 0.0));
+    }
+
+    #[test]
+    fn weather_colorizes_only_sun_moon_and_rain() {
+        assert_eq!(weather_icon_color("weather_sunny"), Some((1.0, 0.85, 0.0)));
+        assert_eq!(weather_icon_color("weather_moon"), Some((1.0, 0.85, 0.0)));
+        assert_eq!(weather_icon_color("weather_rainy"), Some((0.0, 0.45, 1.0)));
+        assert_eq!(weather_icon_color("weather_cloudy"), None);
+    }
+
+    #[test]
+    fn brightness_slider_icons_blend_from_white_to_orange() {
+        assert_eq!(
+            slider_icon_color(SliderKind::DisplayBrightness, 0),
+            Some((1.0, 1.0, 1.0))
+        );
+        let orange = slider_icon_color(SliderKind::KeyboardBacklight, 100).unwrap();
+        assert!((orange.0 - 1.0).abs() < f64::EPSILON);
+        assert!((orange.1 - 0.45).abs() < 0.0001);
+        assert!((orange.2 - 0.0).abs() < f64::EPSILON);
+        assert_eq!(slider_icon_color(SliderKind::Volume, 100), None);
+    }
+
+    #[test]
+    fn notification_nav_space_goes_to_content_until_multiple_notifications() {
+        let layer = notification_layer();
+
+        let empty = NotificationManager::with_count(0);
+        assert_eq!(
+            layer.button_spans(Some(&empty)),
+            vec![(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 11.0)]
+        );
+
+        let one = NotificationManager::with_count(1);
+        assert_eq!(
+            layer.button_spans(Some(&one)),
+            vec![(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 11.0)]
+        );
+
+        let two = NotificationManager::with_count(2);
+        assert_eq!(
+            layer.button_spans(Some(&two)),
+            vec![(0.0, 1.0), (1.0, 9.0), (9.0, 10.0), (10.0, 11.0)]
+        );
+    }
+
+    #[test]
+    fn fractional_stretch_is_preserved_in_layer_spans() {
+        let layer = FunctionLayer {
+            name: "Fractional".to_string(),
+            displays_time: false,
+            displays_battery: false,
+            displays_sysinfo: false,
+            displays_slider: false,
+            displays_weather: false,
+            displays_notifications: false,
+            buttons: vec![
+                (0.0, test_button(ButtonImage::Text("a".to_string()))),
+                (0.5, test_button(ButtonImage::Text("b".to_string()))),
+                (2.0, test_button(ButtonImage::Text("c".to_string()))),
+            ],
+            virtual_button_count: 3.0,
+            faster_refresh: false,
+        };
+
+        assert_eq!(
+            layer.button_spans(None),
+            vec![(0.0, 0.5), (0.5, 2.0), (2.0, 3.0)]
+        );
     }
 }
