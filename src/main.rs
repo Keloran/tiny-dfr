@@ -209,7 +209,6 @@ fn battery_color(percent: u32) -> (f64, f64, f64) {
 fn weather_icon_color(icon: &str) -> Option<(f64, f64, f64)> {
     match icon {
         "weather_sunny" | "weather_moon" => Some((1.0, 0.85, 0.0)),
-        "weather_rainy" => Some((0.0, 0.45, 1.0)),
         _ => None,
     }
 }
@@ -3102,7 +3101,7 @@ mod tests {
     fn weather_colorizes_only_sun_moon_and_rain() {
         assert_eq!(weather_icon_color("weather_sunny"), Some((1.0, 0.85, 0.0)));
         assert_eq!(weather_icon_color("weather_moon"), Some((1.0, 0.85, 0.0)));
-        assert_eq!(weather_icon_color("weather_rainy"), Some((0.0, 0.45, 1.0)));
+        assert_eq!(weather_icon_color("weather_rainy"), None);
         assert_eq!(weather_icon_color("weather_cloudy"), None);
     }
 
