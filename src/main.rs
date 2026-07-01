@@ -142,8 +142,8 @@ enum ButtonImage {
     LayerToggle(String, String),
     CpuUsage(Option<Handle>, bool),
     MemoryUsage(Option<Handle>, bool),
-    ActiveWindow,
-    ActiveWorkspace(Option<Handle>),
+    ActiveWindow(Handle, bool),
+    ActiveWorkspace(Option<Handle>, bool),
     Slider {
         state: Slider,
         icon: Option<Handle>,
@@ -210,6 +210,14 @@ fn battery_warning(capacity: u32, state: BatteryState, colorize: bool) -> bool {
     colorize && state != BatteryState::Charging && capacity <= 10
 }
 
+fn now_playing_icon_color(colorize: bool) -> Option<(f64, f64, f64)> {
+    colorize.then_some((0.0, 0.8, 0.0))
+}
+
+fn workspace_icon_color(colorize: bool) -> Option<(f64, f64, f64)> {
+    colorize.then_some((0.55, 0.25, 1.0))
+}
+
 fn weather_icon_color(icon: &str) -> Option<(f64, f64, f64)> {
     match icon {
         "weather_sunny" | "weather_moon" => Some((1.0, 0.85, 0.0)),
@@ -268,6 +276,7 @@ enum ButtonContent {
     },
     IconWithCenteredText {
         icon: Handle,
+        icon_color: Option<(f64, f64, f64)>,
         icon_size: f64,
         text: String,
     },
@@ -290,6 +299,11 @@ enum ButtonContent {
     },
     // Clipped text (for window titles that might overflow)
     ClippedText(String),
+    IconWithClippedText {
+        icon: Handle,
+        icon_color: Option<(f64, f64, f64)>,
+        text: String,
+    },
     // Multiple centered lines of text (no icon)
     MultilineText(Vec<String>),
     // Slider with a live value indicator (brightness / backlight / volume)
@@ -530,14 +544,23 @@ impl Button {
                     ButtonContent::Empty
                 }
             }
-            ButtonImage::ActiveWindow => {
+            ButtonImage::ActiveWindow(icon, colorize) => {
                 if let Some(mgr) = sysinfo_mgr {
-                    ButtonContent::ClippedText(mgr.get_active_window())
+                    let (text, now_playing) = mgr.get_titlebar_text();
+                    if now_playing {
+                        ButtonContent::IconWithClippedText {
+                            icon: icon.clone(),
+                            icon_color: now_playing_icon_color(*colorize),
+                            text,
+                        }
+                    } else {
+                        ButtonContent::ClippedText(text)
+                    }
                 } else {
                     ButtonContent::Empty
                 }
             }
-            ButtonImage::ActiveWorkspace(icon) => {
+            ButtonImage::ActiveWorkspace(icon, colorize) => {
                 if let Some(mgr) = sysinfo_mgr {
                     let workspace = mgr.get_active_workspace();
                     if let Some(svg) = icon {
@@ -548,6 +571,7 @@ impl Button {
                         };
                         ButtonContent::IconWithCenteredText {
                             icon: svg.clone(),
+                            icon_color: workspace_icon_color(*colorize),
                             icon_size: self.icon_width.min(self.icon_height),
                             text: ws_text,
                         }
@@ -797,14 +821,19 @@ impl Button {
             }
             ButtonContent::IconWithCenteredText {
                 icon,
+                icon_color,
                 icon_size,
                 text,
             } => {
                 let icon_x =
                     button_left_edge + (button_width as f64 / 2.0 - icon_size / 2.0).round();
                 let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
-                icon.render_document(c, &Rectangle::new(icon_x, icon_y, icon_size, icon_size))
-                    .unwrap();
+                if let Some(color) = icon_color {
+                    render_tinted_icon(c, &icon, icon_x, icon_y, icon_size, color);
+                } else {
+                    icon.render_document(c, &Rectangle::new(icon_x, icon_y, icon_size, icon_size))
+                        .unwrap();
+                }
 
                 let extents = c.text_extents(&text).unwrap();
                 c.move_to(
@@ -946,6 +975,41 @@ impl Button {
                 c.show_text(&text).unwrap();
 
                 // Restore context
+                c.restore().unwrap();
+            }
+            ButtonContent::IconWithClippedText {
+                icon,
+                icon_color,
+                text,
+            } => {
+                let icon_size = DEFAULT_ICON_SIZE as f64;
+                let spacing = 4.0;
+                let extents = c.text_extents(&text).unwrap();
+                let total_width = icon_size + spacing + extents.width();
+                let start_x =
+                    button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+                let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+
+                c.save().unwrap();
+                c.rectangle(
+                    button_left_edge,
+                    y_shift,
+                    button_width as f64,
+                    height as f64,
+                );
+                c.clip();
+
+                if let Some(color) = icon_color {
+                    render_tinted_icon(c, &icon, start_x, icon_y, icon_size, color);
+                } else {
+                    icon.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
+                        .unwrap();
+                }
+                c.move_to(
+                    start_x + icon_size + spacing,
+                    y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                );
+                c.show_text(&text).unwrap();
                 c.restore().unwrap();
             }
             ButtonContent::MultilineText(lines) => {
@@ -1350,7 +1414,7 @@ impl Button {
                 cfg.colorize,
             )
         } else if matches!(button_name, Some("ActiveWindow" | "active_window")) {
-            Button::new_active_window(cfg.action)
+            Button::new_active_window(cfg.action, cfg.theme, cfg.colorize)
         } else if matches!(button_name, Some("ActiveWorkspace" | "active_workspace")) {
             Button::new_active_workspace(
                 cfg.action,
@@ -1359,6 +1423,7 @@ impl Button {
                 cfg.theme,
                 cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
                 cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
+                cfg.colorize,
             )
         } else if let Some(icon) = cfg.icon {
             Button::new_icon(
@@ -1722,12 +1787,23 @@ impl Button {
             hold_started: None,
         }
     }
-    fn new_active_window(action: Vec<Key>) -> Button {
+    fn new_active_window(
+        action: Vec<Key>,
+        theme: Option<impl AsRef<str>>,
+        colorize: bool,
+    ) -> Button {
+        let icon = if let ButtonImage::Svg(svg) =
+            try_load_image("play", theme, DEFAULT_ICON_SIZE, DEFAULT_ICON_SIZE).unwrap()
+        {
+            svg
+        } else {
+            panic!("failed to load play icon");
+        };
         Button {
             action,
             active: false,
             changed: false,
-            image: ButtonImage::ActiveWindow,
+            image: ButtonImage::ActiveWindow(icon, colorize),
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
@@ -1745,6 +1821,7 @@ impl Button {
         theme: Option<impl AsRef<str>>,
         icon_width: i32,
         icon_height: i32,
+        colorize: bool,
     ) -> Button {
         let icon_handle = icon.and_then(|i| {
             try_load_image(i, theme, icon_width, icon_height)
@@ -1763,7 +1840,7 @@ impl Button {
             action,
             active: false,
             changed: false,
-            image: ButtonImage::ActiveWorkspace(icon_handle),
+            image: ButtonImage::ActiveWorkspace(icon_handle, colorize),
             command,
             icon_width: w,
             icon_height: h,
@@ -1787,8 +1864,8 @@ impl Button {
             }),
             ButtonImage::CpuUsage(_, _)
             | ButtonImage::MemoryUsage(_, _)
-            | ButtonImage::ActiveWindow
-            | ButtonImage::ActiveWorkspace(_)
+            | ButtonImage::ActiveWindow(_, _)
+            | ButtonImage::ActiveWorkspace(_, _)
             | ButtonImage::Notification(_, _, _) => true,
             _ => false,
         }
@@ -1818,7 +1895,7 @@ impl Button {
         let button_type = match &self.image {
             ButtonImage::CpuUsage(_, _) => "CPU",
             ButtonImage::MemoryUsage(_, _) => "Memory",
-            ButtonImage::ActiveWorkspace(_) => "Workspace",
+            ButtonImage::ActiveWorkspace(_, _) => "Workspace",
             ButtonImage::Battery(_, _, _, _) => "Battery",
             _ => "Other",
         };
@@ -1950,6 +2027,9 @@ impl Button {
             _ => None,
         }
     }
+    fn is_active_window(&self) -> bool {
+        matches!(self.image, ButtonImage::ActiveWindow(_, _))
+    }
     fn supports_hold(&self) -> bool {
         matches!(self.notification_kind(), Some(NotificationButton::Text))
     }
@@ -1982,6 +2062,9 @@ impl Button {
         if matches!(self.image, ButtonImage::Notification(_, _, _)) {
             return true;
         }
+        if matches!(self.image, ButtonImage::ActiveWindow(_, _)) {
+            return true;
+        }
         !self.action.is_empty() || self.command.is_some() || self.layer_toggle_target().is_some()
     }
     fn is_visible(
@@ -1990,7 +2073,7 @@ impl Button {
         notification_mgr: Option<&NotificationManager>,
     ) -> bool {
         match self.image {
-            ButtonImage::ActiveWindow | ButtonImage::ActiveWorkspace(_) => sysinfo_mgr
+            ButtonImage::ActiveWindow(_, _) | ButtonImage::ActiveWorkspace(_, _) => sysinfo_mgr
                 .map(|mgr| mgr.desktop_info_available())
                 .unwrap_or(false),
             ButtonImage::Notification(
@@ -2489,6 +2572,9 @@ impl FunctionLayer {
                 if !self.buttons[button_index].1.is_interactive() {
                     return None;
                 }
+                if self.buttons[button_index].1.is_active_window() {
+                    return Some(button_index);
+                }
                 if !self.buttons[button_index]
                     .1
                     .is_visible(None, notification_mgr)
@@ -2803,8 +2889,8 @@ fn real_main(drm: &mut DrmBackend) {
                 match button.1.image {
                     ButtonImage::CpuUsage(_, _)
                     | ButtonImage::MemoryUsage(_, _)
-                    | ButtonImage::ActiveWindow
-                    | ButtonImage::ActiveWorkspace(_) => {
+                    | ButtonImage::ActiveWindow(_, _)
+                    | ButtonImage::ActiveWorkspace(_, _) => {
                         button.1.changed = true;
                     }
                     _ => {}
@@ -3052,9 +3138,14 @@ fn real_main(drm: &mut DrmBackend) {
                                 .map(str::to_string);
                             let notification_kind =
                                 layers[layer].buttons[btn].1.notification_kind();
+                            let active_window = layers[layer].buttons[btn].1.is_active_window();
                             layers[layer].buttons[btn].1.set_active(&mut uinput, false);
                             layers[layer].buttons[btn].1.clear_hold();
                             touches.remove(&up.seat_slot());
+                            if active_window && sysinfo_mgr.toggle_titlebar_text() {
+                                needs_complete_redraw = true;
+                                continue;
+                            }
                             match notification_kind {
                                 Some(NotificationButton::Back) => {
                                     normal_layer = notification_return_layer;
@@ -3232,6 +3323,14 @@ mod tests {
     }
 
     #[test]
+    fn titlebar_and_workspace_icon_colors_require_colorize() {
+        assert_eq!(now_playing_icon_color(true), Some((0.0, 0.8, 0.0)));
+        assert_eq!(now_playing_icon_color(false), None);
+        assert_eq!(workspace_icon_color(true), Some((0.55, 0.25, 1.0)));
+        assert_eq!(workspace_icon_color(false), None);
+    }
+
+    #[test]
     fn weather_colorizes_only_sun_moon_and_rain() {
         assert_eq!(weather_icon_color("weather_sunny"), Some((1.0, 0.85, 0.0)));
         assert_eq!(weather_icon_color("weather_moon"), Some((1.0, 0.85, 0.0)));
@@ -3316,5 +3415,30 @@ mod tests {
             layer.button_spans(None),
             vec![(0.0, 0.5), (0.5, 2.0), (2.0, 3.0)]
         );
+    }
+
+    #[test]
+    fn active_window_button_is_hittable_for_toggle() {
+        let play = if let ButtonImage::Svg(svg) =
+            try_load_image("play", None::<&str>, DEFAULT_ICON_SIZE, DEFAULT_ICON_SIZE).unwrap()
+        {
+            svg
+        } else {
+            panic!("failed to load play icon");
+        };
+        let layer = FunctionLayer {
+            name: "Titlebar".to_string(),
+            displays_time: false,
+            displays_battery: false,
+            displays_sysinfo: true,
+            displays_slider: false,
+            displays_weather: false,
+            displays_notifications: false,
+            buttons: vec![(0.0, test_button(ButtonImage::ActiveWindow(play, false)))],
+            virtual_button_count: 1.0,
+            faster_refresh: false,
+        };
+
+        assert_eq!(layer.hit(100, 30, 50.0, 15.0, None, None), Some(0));
     }
 }
