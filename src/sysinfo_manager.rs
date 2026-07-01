@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::{fs::MetadataExt, net::UnixStream};
 use std::path::Path;
+use std::process::Command;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,6 +24,7 @@ use cosmic_client_toolkit::{
 
 const SYSTEM_STATS_REFRESH: Duration = Duration::from_secs(2);
 const DESKTOP_INFO_REFRESH: Duration = Duration::from_millis(250);
+const NOW_PLAYING_REFRESH: Duration = Duration::from_secs(1);
 
 /// Configure the Hyprland IPC environment when tiny-dfr is started through sudo.
 fn setup_hyprland_env() -> Option<String> {
@@ -249,6 +251,8 @@ pub struct SystemInfo {
     memory_total: u64,
     active_window: String,
     active_workspace: String,
+    now_playing: String,
+    show_now_playing: bool,
     desktop_info_available: bool,
     last_update: Instant,
 }
@@ -261,6 +265,8 @@ impl SystemInfo {
             memory_total: 0,
             active_window: String::new(),
             active_workspace: String::new(),
+            now_playing: String::new(),
+            show_now_playing: true,
             desktop_info_available: false,
             last_update: Instant::now(),
         }
@@ -283,6 +289,99 @@ impl SystemInfo {
         self.active_workspace = active_workspace;
         self.desktop_info_available = desktop_info_available;
         self.last_update = Instant::now();
+    }
+
+    fn update_now_playing(&mut self, now_playing: String) {
+        if self.now_playing.is_empty() && !now_playing.is_empty() {
+            self.show_now_playing = true;
+        }
+        self.now_playing = now_playing;
+        self.last_update = Instant::now();
+    }
+
+    fn titlebar_text(&self) -> String {
+        if self.show_now_playing && !self.now_playing.is_empty() {
+            self.now_playing.clone()
+        } else {
+            self.active_window.clone()
+        }
+    }
+
+    fn toggle_titlebar_text(&mut self) -> bool {
+        if self.now_playing.is_empty() {
+            return false;
+        }
+        self.show_now_playing = !self.show_now_playing;
+        true
+    }
+}
+
+fn current_now_playing() -> String {
+    let status = Command::new("playerctl")
+        .arg("-s")
+        .arg("status")
+        .output()
+        .ok()
+        .and_then(|output| output.status.success().then_some(output.stdout))
+        .and_then(|stdout| String::from_utf8(stdout).ok())
+        .unwrap_or_default();
+    if status.trim() != "Playing" {
+        return String::new();
+    }
+
+    let metadata = Command::new("playerctl")
+        .arg("-s")
+        .arg("metadata")
+        .arg("--format")
+        .arg("{{artist}} - {{title}}")
+        .output()
+        .ok()
+        .and_then(|output| output.status.success().then_some(output.stdout))
+        .and_then(|stdout| String::from_utf8(stdout).ok())
+        .unwrap_or_default();
+    clean_now_playing(metadata.trim())
+}
+
+fn clean_now_playing(text: &str) -> String {
+    text.trim_matches(|c: char| c.is_whitespace() || c == '-')
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn now_playing_text_trims_empty_artist_separator() {
+        assert_eq!(clean_now_playing("Artist - Track"), "Artist - Track");
+        assert_eq!(clean_now_playing(" - Track"), "Track");
+        assert_eq!(clean_now_playing("Artist - "), "Artist");
+    }
+
+    #[test]
+    fn titlebar_text_toggles_between_now_playing_and_window() {
+        let mut info = SystemInfo::new();
+        info.update_desktop_info("Window".to_string(), String::new(), true);
+        assert_eq!(info.titlebar_text(), "Window");
+        assert!(!info.toggle_titlebar_text());
+
+        info.update_now_playing("Artist - Track".to_string());
+        assert_eq!(info.titlebar_text(), "Artist - Track");
+        assert!(info.toggle_titlebar_text());
+        assert_eq!(info.titlebar_text(), "Window");
+    }
+
+    #[test]
+    fn new_now_playing_replaces_window_after_empty_state() {
+        let mut info = SystemInfo::new();
+        info.update_desktop_info("Window".to_string(), String::new(), true);
+        info.update_now_playing("Track".to_string());
+        assert!(info.toggle_titlebar_text());
+        assert_eq!(info.titlebar_text(), "Window");
+
+        info.update_now_playing(String::new());
+        info.update_now_playing("New Track".to_string());
+        assert_eq!(info.titlebar_text(), "New Track");
     }
 }
 
@@ -600,6 +699,15 @@ impl SystemInfoManager {
             }
         });
 
+        let now_playing_info = Arc::clone(&info);
+        thread::spawn(move || loop {
+            now_playing_info
+                .lock()
+                .unwrap()
+                .update_now_playing(current_now_playing());
+            thread::sleep(NOW_PLAYING_REFRESH);
+        });
+
         thread::spawn(move || {
             let prefer_cosmic = is_cosmic_session();
             let mut last_cosmic_error = None;
@@ -678,8 +786,14 @@ impl SystemInfoManager {
         (info.memory_usage, info.memory_total)
     }
 
-    pub fn get_active_window(&self) -> String {
-        self.info.lock().unwrap().active_window.clone()
+    pub fn get_titlebar_text(&self) -> (String, bool) {
+        let info = self.info.lock().unwrap();
+        let now_playing = info.show_now_playing && !info.now_playing.is_empty();
+        (info.titlebar_text(), now_playing)
+    }
+
+    pub fn toggle_titlebar_text(&self) -> bool {
+        self.info.lock().unwrap().toggle_titlebar_text()
     }
 
     pub fn get_active_workspace(&self) -> String {

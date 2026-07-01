@@ -142,8 +142,8 @@ enum ButtonImage {
     LayerToggle(String, String),
     CpuUsage(Option<Handle>, bool),
     MemoryUsage(Option<Handle>, bool),
-    ActiveWindow,
-    ActiveWorkspace(Option<Handle>),
+    ActiveWindow(Option<Handle>, bool),
+    ActiveWorkspace(Option<Handle>, bool),
     Slider {
         state: Slider,
         icon: Option<Handle>,
@@ -206,6 +206,18 @@ fn battery_color(percent: u32) -> (f64, f64, f64) {
     }
 }
 
+fn battery_warning(capacity: u32, state: BatteryState, colorize: bool) -> bool {
+    colorize && state != BatteryState::Charging && capacity <= 10
+}
+
+fn now_playing_icon_color(colorize: bool) -> Option<(f64, f64, f64)> {
+    colorize.then_some((0.0, 0.8, 0.0))
+}
+
+fn workspace_icon_color(colorize: bool) -> Option<(f64, f64, f64)> {
+    colorize.then_some((0.55, 0.25, 1.0))
+}
+
 fn weather_icon_color(icon: &str) -> Option<(f64, f64, f64)> {
     match icon {
         "weather_sunny" | "weather_moon" => Some((1.0, 0.85, 0.0)),
@@ -264,6 +276,7 @@ enum ButtonContent {
     },
     IconWithCenteredText {
         icon: Handle,
+        icon_color: Option<(f64, f64, f64)>,
         icon_size: f64,
         text: String,
     },
@@ -286,6 +299,11 @@ enum ButtonContent {
     },
     // Clipped text (for window titles that might overflow)
     ClippedText(String),
+    IconWithClippedText {
+        icon: Handle,
+        icon_color: Option<(f64, f64, f64)>,
+        text: String,
+    },
     // Multiple centered lines of text (no icon)
     MultilineText(Vec<String>),
     // Slider with a live value indicator (brightness / backlight / volume)
@@ -526,14 +544,23 @@ impl Button {
                     ButtonContent::Empty
                 }
             }
-            ButtonImage::ActiveWindow => {
+            ButtonImage::ActiveWindow(icon, colorize) => {
                 if let Some(mgr) = sysinfo_mgr {
-                    ButtonContent::ClippedText(mgr.get_active_window())
+                    let (text, now_playing) = mgr.get_titlebar_text();
+                    if now_playing && icon.is_some() {
+                        ButtonContent::IconWithClippedText {
+                            icon: icon.clone().unwrap(),
+                            icon_color: now_playing_icon_color(*colorize),
+                            text,
+                        }
+                    } else {
+                        ButtonContent::ClippedText(text)
+                    }
                 } else {
                     ButtonContent::Empty
                 }
             }
-            ButtonImage::ActiveWorkspace(icon) => {
+            ButtonImage::ActiveWorkspace(icon, colorize) => {
                 if let Some(mgr) = sysinfo_mgr {
                     let workspace = mgr.get_active_workspace();
                     if let Some(svg) = icon {
@@ -544,6 +571,7 @@ impl Button {
                         };
                         ButtonContent::IconWithCenteredText {
                             icon: svg.clone(),
+                            icon_color: workspace_icon_color(*colorize),
                             icon_size: self.icon_width.min(self.icon_height),
                             text: ws_text,
                         }
@@ -793,14 +821,19 @@ impl Button {
             }
             ButtonContent::IconWithCenteredText {
                 icon,
+                icon_color,
                 icon_size,
                 text,
             } => {
                 let icon_x =
                     button_left_edge + (button_width as f64 / 2.0 - icon_size / 2.0).round();
                 let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
-                icon.render_document(c, &Rectangle::new(icon_x, icon_y, icon_size, icon_size))
-                    .unwrap();
+                if let Some(color) = icon_color {
+                    render_tinted_icon(c, &icon, icon_x, icon_y, icon_size, color);
+                } else {
+                    icon.render_document(c, &Rectangle::new(icon_x, icon_y, icon_size, icon_size))
+                        .unwrap();
+                }
 
                 let extents = c.text_extents(&text).unwrap();
                 c.move_to(
@@ -942,6 +975,41 @@ impl Button {
                 c.show_text(&text).unwrap();
 
                 // Restore context
+                c.restore().unwrap();
+            }
+            ButtonContent::IconWithClippedText {
+                icon,
+                icon_color,
+                text,
+            } => {
+                let icon_size = DEFAULT_ICON_SIZE as f64;
+                let spacing = 4.0;
+                let extents = c.text_extents(&text).unwrap();
+                let total_width = icon_size + spacing + extents.width();
+                let start_x =
+                    button_left_edge + (button_width as f64 / 2.0 - total_width / 2.0).round();
+                let icon_y = y_shift + ((height as f64 - icon_size) / 2.0).round();
+
+                c.save().unwrap();
+                c.rectangle(
+                    button_left_edge,
+                    y_shift,
+                    button_width as f64,
+                    height as f64,
+                );
+                c.clip();
+
+                if let Some(color) = icon_color {
+                    render_tinted_icon(c, &icon, start_x, icon_y, icon_size, color);
+                } else {
+                    icon.render_document(c, &Rectangle::new(start_x, icon_y, icon_size, icon_size))
+                        .unwrap();
+                }
+                c.move_to(
+                    start_x + icon_size + spacing,
+                    y_shift + (height as f64 / 2.0 + extents.height() / 2.0).round(),
+                );
+                c.show_text(&text).unwrap();
                 c.restore().unwrap();
             }
             ButtonContent::MultilineText(lines) => {
@@ -1346,7 +1414,7 @@ impl Button {
                 cfg.colorize,
             )
         } else if matches!(button_name, Some("ActiveWindow" | "active_window")) {
-            Button::new_active_window(cfg.action)
+            Button::new_active_window(cfg.action, cfg.theme, cfg.colorize)
         } else if matches!(button_name, Some("ActiveWorkspace" | "active_workspace")) {
             Button::new_active_workspace(
                 cfg.action,
@@ -1355,6 +1423,7 @@ impl Button {
                 cfg.theme,
                 cfg.icon_width.unwrap_or(DEFAULT_ICON_SIZE),
                 cfg.icon_height.unwrap_or(DEFAULT_ICON_SIZE),
+                cfg.colorize,
             )
         } else if let Some(icon) = cfg.icon {
             Button::new_icon(
@@ -1718,12 +1787,23 @@ impl Button {
             hold_started: None,
         }
     }
-    fn new_active_window(action: Vec<Key>) -> Button {
+    fn new_active_window(
+        action: Vec<Key>,
+        theme: Option<impl AsRef<str>>,
+        colorize: bool,
+    ) -> Button {
+        let icon = if let ButtonImage::Svg(svg) =
+            try_load_image("play", theme, DEFAULT_ICON_SIZE, DEFAULT_ICON_SIZE).unwrap()
+        {
+            svg
+        } else {
+            panic!("failed to load play icon");
+        };
         Button {
             action,
             active: false,
             changed: false,
-            image: ButtonImage::ActiveWindow,
+            image: ButtonImage::ActiveWindow(Some(icon), colorize),
             command: None,
             icon_width: 0.0,
             icon_height: 0.0,
@@ -1741,6 +1821,7 @@ impl Button {
         theme: Option<impl AsRef<str>>,
         icon_width: i32,
         icon_height: i32,
+        colorize: bool,
     ) -> Button {
         let icon_handle = icon.and_then(|i| {
             try_load_image(i, theme, icon_width, icon_height)
@@ -1759,7 +1840,7 @@ impl Button {
             action,
             active: false,
             changed: false,
-            image: ButtonImage::ActiveWorkspace(icon_handle),
+            image: ButtonImage::ActiveWorkspace(icon_handle, colorize),
             command,
             icon_width: w,
             icon_height: h,
@@ -1783,8 +1864,8 @@ impl Button {
             }),
             ButtonImage::CpuUsage(_, _)
             | ButtonImage::MemoryUsage(_, _)
-            | ButtonImage::ActiveWindow
-            | ButtonImage::ActiveWorkspace(_)
+            | ButtonImage::ActiveWindow(_, _)
+            | ButtonImage::ActiveWorkspace(_, _)
             | ButtonImage::Notification(_, _, _) => true,
             _ => false,
         }
@@ -1814,7 +1895,7 @@ impl Button {
         let button_type = match &self.image {
             ButtonImage::CpuUsage(_, _) => "CPU",
             ButtonImage::MemoryUsage(_, _) => "Memory",
-            ButtonImage::ActiveWorkspace(_) => "Workspace",
+            ButtonImage::ActiveWorkspace(_, _) => "Workspace",
             ButtonImage::Battery(_, _, _, _) => "Battery",
             _ => "Other",
         };
@@ -1946,6 +2027,9 @@ impl Button {
             _ => None,
         }
     }
+    fn is_active_window(&self) -> bool {
+        matches!(self.image, ButtonImage::ActiveWindow(_, _))
+    }
     fn supports_hold(&self) -> bool {
         matches!(self.notification_kind(), Some(NotificationButton::Text))
     }
@@ -1978,6 +2062,9 @@ impl Button {
         if matches!(self.image, ButtonImage::Notification(_, _, _)) {
             return true;
         }
+        if matches!(self.image, ButtonImage::ActiveWindow(_, _)) {
+            return true;
+        }
         !self.action.is_empty() || self.command.is_some() || self.layer_toggle_target().is_some()
     }
     fn is_visible(
@@ -1986,7 +2073,7 @@ impl Button {
         notification_mgr: Option<&NotificationManager>,
     ) -> bool {
         match self.image {
-            ButtonImage::ActiveWindow | ButtonImage::ActiveWorkspace(_) => sysinfo_mgr
+            ButtonImage::ActiveWindow(_, _) | ButtonImage::ActiveWorkspace(_, _) => sysinfo_mgr
                 .map(|mgr| mgr.desktop_info_available())
                 .unwrap_or(false),
             ButtonImage::Notification(
@@ -2001,12 +2088,16 @@ impl Button {
         }
     }
     fn set_background_color(&self, c: &Context, color: f64) {
-        if let ButtonImage::Battery(battery, _, _, _) = &self.image {
-            let (_, state) = get_battery_state(battery);
-            match state {
-                BatteryState::NotCharging => c.set_source_rgb(color, color, color),
-                BatteryState::Charging => c.set_source_rgb(0.0, color, 0.0),
-                BatteryState::Low => c.set_source_rgb(color, 0.0, 0.0),
+        if let ButtonImage::Battery(battery, _, _, colorize) = &self.image {
+            let (capacity, state) = get_battery_state(battery);
+            if battery_warning(capacity, state, *colorize) {
+                c.set_source_rgb(color, 0.0, 0.0);
+            } else {
+                match state {
+                    BatteryState::NotCharging => c.set_source_rgb(color, color, color),
+                    BatteryState::Charging => c.set_source_rgb(0.0, color, 0.0),
+                    BatteryState::Low => c.set_source_rgb(color, color, color),
+                }
             }
         } else {
             c.set_source_rgb(color, color, color);
@@ -2045,12 +2136,29 @@ pub struct FunctionLayer {
     faster_refresh: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LayoutItemKind {
+    Button(usize),
+    NotificationAction(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LayoutItem {
+    start: f64,
+    end: f64,
+    kind: LayoutItemKind,
+}
+
 impl FunctionLayer {
-    fn button_spans(&self, notification_mgr: Option<&NotificationManager>) -> Vec<(f64, f64)> {
+    fn layout_items(&self, notification_mgr: Option<&NotificationManager>) -> Vec<LayoutItem> {
         let hide_notification_nav = self.displays_notifications
             && notification_mgr
                 .map(|mgr| !mgr.can_navigate())
                 .unwrap_or(false);
+        let action_count = notification_mgr
+            .map(|mgr| mgr.current_actions().len())
+            .unwrap_or(0);
+        let action_width = action_count as f64 * 2.0;
         let notification_nav_width = if hide_notification_nav {
             self.buttons
                 .iter()
@@ -2068,24 +2176,45 @@ impl FunctionLayer {
         };
 
         let mut cursor = 0.0;
-        self.buttons
-            .iter()
-            .enumerate()
-            .map(|(i, (_, button))| {
-                let mut width = self.button_width_units(i);
-                if hide_notification_nav {
-                    match button.notification_kind() {
-                        Some(NotificationButton::Previous | NotificationButton::Next) => {
-                            width = 0.0
-                        }
-                        Some(NotificationButton::Text) => width += notification_nav_width,
-                        _ => {}
-                    }
+        let mut items = Vec::new();
+        for (i, (_, button)) in self.buttons.iter().enumerate() {
+            let mut width = self.button_width_units(i);
+            if hide_notification_nav {
+                match button.notification_kind() {
+                    Some(NotificationButton::Previous | NotificationButton::Next) => width = 0.0,
+                    Some(NotificationButton::Text) => width += notification_nav_width,
+                    _ => {}
                 }
-                let start = cursor;
-                cursor += width;
-                (start, cursor)
-            })
+            }
+            if matches!(button.notification_kind(), Some(NotificationButton::Text)) {
+                width = (width - action_width).max(0.5);
+            }
+            let start = cursor;
+            cursor += width;
+            items.push(LayoutItem {
+                start,
+                end: cursor,
+                kind: LayoutItemKind::Button(i),
+            });
+            if matches!(button.notification_kind(), Some(NotificationButton::Text)) {
+                for action_index in 0..action_count {
+                    let start = cursor;
+                    cursor += 2.0;
+                    items.push(LayoutItem {
+                        start,
+                        end: cursor,
+                        kind: LayoutItemKind::NotificationAction(action_index),
+                    });
+                }
+            }
+        }
+        items
+    }
+
+    fn button_spans(&self, notification_mgr: Option<&NotificationManager>) -> Vec<(f64, f64)> {
+        self.layout_items(notification_mgr)
+            .into_iter()
+            .map(|item| (item.start, item.end))
             .collect()
     }
 
@@ -2184,8 +2313,8 @@ impl FunctionLayer {
         } else {
             0
         };
-        let spans = self.button_spans(notification_mgr);
-        let visible_buttons = spans.iter().filter(|(start, end)| end > start).count();
+        let items = self.layout_items(notification_mgr);
+        let visible_buttons = items.iter().filter(|item| item.end > item.start).count();
         let total_spacing = BUTTON_SPACING_PX as f64 * visible_buttons.saturating_sub(1) as f64;
         let virtual_button_width =
             (width as f64 - pixel_shift_width as f64 - total_spacing) / self.virtual_button_count;
@@ -2201,34 +2330,52 @@ impl FunctionLayer {
         c.set_font_face(&config.font_face);
         c.set_font_size(config.font_size);
 
-        for i in 0..self.buttons.len() {
-            let (start, end) = spans[i];
-            let visible_i = spans[..i].iter().filter(|(start, end)| end > start).count();
-            let (_, button) = &mut self.buttons[i];
+        for (i, item) in items.iter().enumerate() {
+            let visible_i = items[..i]
+                .iter()
+                .filter(|item| item.end > item.start)
+                .count();
+            let button_index = match item.kind {
+                LayoutItemKind::Button(button_index) => Some(button_index),
+                LayoutItemKind::NotificationAction(_) => None,
+            };
+            let button_changed = button_index
+                .map(|button_index| self.buttons[button_index].1.changed)
+                .unwrap_or(true);
 
-            if !button.changed && !complete_redraw {
+            if !button_changed && !complete_redraw {
                 continue;
             };
-            if end <= start {
+            if item.end <= item.start {
                 continue;
             }
 
-            let left_edge = (start * virtual_button_width
+            let left_edge = (item.start * virtual_button_width
                 + visible_i as f64 * BUTTON_SPACING_PX as f64)
                 .floor()
                 + pixel_shift_x
                 + (pixel_shift_width / 2) as f64;
 
-            let button_width = ((end - start) * virtual_button_width).floor();
+            let button_width = ((item.end - item.start) * virtual_button_width).floor();
 
-            let color = if button.active {
+            let active = button_index
+                .map(|button_index| self.buttons[button_index].1.active)
+                .unwrap_or(false);
+
+            let color = if active {
                 BUTTON_COLOR_ACTIVE
             } else if config.show_button_outlines {
                 BUTTON_COLOR_INACTIVE
             } else {
                 0.0
             };
-            let button_visible = button.is_visible(sysinfo_mgr, notification_mgr);
+            let button_visible = button_index
+                .map(|button_index| {
+                    self.buttons[button_index]
+                        .1
+                        .is_visible(sysinfo_mgr, notification_mgr)
+                })
+                .unwrap_or(true);
             if !complete_redraw {
                 c.set_source_rgb(0.0, 0.0, 0.0);
                 c.rectangle(
@@ -2240,7 +2387,13 @@ impl FunctionLayer {
                 c.fill().unwrap();
             }
             if button_visible {
-                button.set_background_color_with_notifications(&c, color, notification_mgr);
+                if let Some(button_index) = button_index {
+                    self.buttons[button_index]
+                        .1
+                        .set_background_color_with_notifications(&c, color, notification_mgr);
+                } else {
+                    c.set_source_rgb(color, color, color);
+                }
                 // draw box with rounded corners
                 c.new_sub_path();
                 let left = left_edge + radius;
@@ -2275,7 +2428,9 @@ impl FunctionLayer {
                 );
                 c.close_path();
                 c.fill().unwrap();
-                if let Some(progress) = button.hold_progress() {
+                if let Some(progress) = button_index
+                    .and_then(|button_index| self.buttons[button_index].1.hold_progress())
+                {
                     c.set_source_rgb(0.55, 0.55, 0.55);
                     c.rectangle(
                         left_edge,
@@ -2288,25 +2443,44 @@ impl FunctionLayer {
             }
             if button_visible {
                 c.set_source_rgb(1.0, 1.0, 1.0);
-                // Set per-button font size if specified, otherwise use global config
-                if let Some(fs) = button.font_size {
-                    c.set_font_size(fs);
-                } else {
-                    c.set_font_size(config.font_size);
+                if let Some(button_index) = button_index {
+                    let button = &self.buttons[button_index].1;
+                    // Set per-button font size if specified, otherwise use global config
+                    if let Some(fs) = button.font_size {
+                        c.set_font_size(fs);
+                    } else {
+                        c.set_font_size(config.font_size);
+                    }
+                    button.render(
+                        &c,
+                        height,
+                        left_edge,
+                        button_width.ceil() as u64,
+                        pixel_shift_y,
+                        sysinfo_mgr,
+                        weather_mgr,
+                        notification_mgr,
+                    );
+                } else if let Some((button, mgr)) = self.buttons.first().zip(notification_mgr) {
+                    if let LayoutItemKind::NotificationAction(action_index) = item.kind {
+                        if let Some(action) = mgr.current_actions().get(action_index) {
+                            c.set_font_size(config.font_size);
+                            button.1.render_content(
+                                &c,
+                                ButtonContent::ClippedText(action.label.clone()),
+                                height,
+                                left_edge,
+                                button_width.ceil() as u64,
+                                pixel_shift_y,
+                            );
+                        }
+                    }
                 }
-                button.render(
-                    &c,
-                    height,
-                    left_edge,
-                    button_width.ceil() as u64,
-                    pixel_shift_y,
-                    sysinfo_mgr,
-                    weather_mgr,
-                    notification_mgr,
-                );
             }
 
-            button.changed = false;
+            if let Some(button_index) = button_index {
+                self.buttons[button_index].1.changed = false;
+            }
 
             if !complete_redraw {
                 modified_regions.push(ClipRect::new(
@@ -2330,44 +2504,58 @@ impl FunctionLayer {
         i: Option<usize>,
         notification_mgr: Option<&NotificationManager>,
     ) -> Option<usize> {
-        let spans = self.button_spans(notification_mgr);
-        let visible_buttons = spans.iter().filter(|(start, end)| end > start).count();
+        let items = self.layout_items(notification_mgr);
+        let visible_buttons = items.iter().filter(|item| item.end > item.start).count();
         let total_spacing = BUTTON_SPACING_PX as f64 * visible_buttons.saturating_sub(1) as f64;
         let virtual_button_width = (width as f64 - total_spacing) / self.virtual_button_count;
 
-        let i = i.unwrap_or_else(|| {
-            spans
+        let i = if let Some(slot) = i {
+            items
+                .iter()
+                .position(|item| match item.kind {
+                    LayoutItemKind::Button(button_index) => button_index == slot,
+                    LayoutItemKind::NotificationAction(action_index) => {
+                        self.buttons.len() + action_index == slot
+                    }
+                })
+                .unwrap_or(items.len())
+        } else {
+            items
                 .iter()
                 .enumerate()
-                .position(|(idx, (start, end))| {
-                    if end <= start {
+                .position(|(idx, item)| {
+                    if item.end <= item.start {
                         return false;
                     }
-                    let visible_i = spans[..idx]
+                    let visible_i = items[..idx]
                         .iter()
-                        .filter(|(start, end)| end > start)
+                        .filter(|item| item.end > item.start)
                         .count();
-                    let left =
-                        start * virtual_button_width + visible_i as f64 * BUTTON_SPACING_PX as f64;
-                    let right = left + (end - start) * virtual_button_width;
+                    let left = item.start * virtual_button_width
+                        + visible_i as f64 * BUTTON_SPACING_PX as f64;
+                    let right = left + (item.end - item.start) * virtual_button_width;
                     x >= left && x <= right
                 })
-                .unwrap_or(self.buttons.len())
-        });
-        if i >= self.buttons.len() {
+                .unwrap_or(items.len())
+        };
+        if i >= items.len() {
             return None;
         }
 
-        let (start, end) = spans[i];
-        if end <= start {
+        let item = items[i];
+        if item.end <= item.start {
             return None;
         }
-        let visible_i = spans[..i].iter().filter(|(start, end)| end > start).count();
+        let visible_i = items[..i]
+            .iter()
+            .filter(|item| item.end > item.start)
+            .count();
 
-        let left_edge =
-            (start * virtual_button_width + visible_i as f64 * BUTTON_SPACING_PX as f64).floor();
+        let left_edge = (item.start * virtual_button_width
+            + visible_i as f64 * BUTTON_SPACING_PX as f64)
+            .floor();
 
-        let button_width = ((end - start) * virtual_button_width).floor();
+        let button_width = ((item.end - item.start) * virtual_button_width).floor();
 
         if x < left_edge
             || x > (left_edge + button_width)
@@ -2379,15 +2567,26 @@ impl FunctionLayer {
 
         // Ignore presses on buttons that have no action to perform so they
         // don't flash an active highlight and appear broken.
-        if !self.buttons[i].1.is_interactive() {
-            return None;
+        match item.kind {
+            LayoutItemKind::Button(button_index) => {
+                if !self.buttons[button_index].1.is_interactive() {
+                    return None;
+                }
+                if self.buttons[button_index].1.is_active_window() {
+                    return Some(button_index);
+                }
+                if !self.buttons[button_index]
+                    .1
+                    .is_visible(None, notification_mgr)
+                {
+                    return None;
+                }
+                Some(button_index)
+            }
+            LayoutItemKind::NotificationAction(action_index) => {
+                Some(self.buttons.len() + action_index)
+            }
         }
-
-        if !self.buttons[i].1.is_visible(None, notification_mgr) {
-            return None;
-        }
-
-        Some(i)
     }
 
     // Fraction (0.0..=1.0) of the touch x-position across button `i`'s width.
@@ -2690,8 +2889,8 @@ fn real_main(drm: &mut DrmBackend) {
                 match button.1.image {
                     ButtonImage::CpuUsage(_, _)
                     | ButtonImage::MemoryUsage(_, _)
-                    | ButtonImage::ActiveWindow
-                    | ButtonImage::ActiveWorkspace(_) => {
+                    | ButtonImage::ActiveWindow(_, _)
+                    | ButtonImage::ActiveWorkspace(_, _) => {
                         button.1.changed = true;
                     }
                     _ => {}
@@ -2845,6 +3044,10 @@ fn real_main(drm: &mut DrmBackend) {
                                 notification_mgr_ref,
                             ) {
                                 touches.insert(dn.seat_slot(), (active_layer, btn, Instant::now()));
+                                if btn >= layers[active_layer].buttons.len() {
+                                    needs_complete_redraw = true;
+                                    continue;
+                                }
                                 match layers[active_layer].buttons[btn].1.slider_kind() {
                                     Some(kind) => {
                                         // Double-tap the volume slider to toggle mute.
@@ -2889,6 +3092,9 @@ fn real_main(drm: &mut DrmBackend) {
                             }
 
                             let (layer, btn, _) = *touches.get(&mtn.seat_slot()).unwrap();
+                            if btn >= layers[layer].buttons.len() {
+                                continue;
+                            }
                             if layers[layer].buttons[btn].1.slider_kind().is_some() {
                                 // Any drag cancels a pending double-tap.
                                 last_volume_tap = None;
@@ -2915,6 +3121,12 @@ fn real_main(drm: &mut DrmBackend) {
                                 continue;
                             }
                             let (layer, btn, down_at) = *touches.get(&up.seat_slot()).unwrap();
+                            if btn >= layers[layer].buttons.len() {
+                                notification_mgr.invoke_action(btn - layers[layer].buttons.len());
+                                touches.remove(&up.seat_slot());
+                                needs_complete_redraw = true;
+                                continue;
+                            }
                             if layers[layer].buttons[btn].1.slider_kind().is_some() {
                                 layers[layer].buttons[btn].1.slider_commit();
                                 touches.remove(&up.seat_slot());
@@ -2926,9 +3138,14 @@ fn real_main(drm: &mut DrmBackend) {
                                 .map(str::to_string);
                             let notification_kind =
                                 layers[layer].buttons[btn].1.notification_kind();
+                            let active_window = layers[layer].buttons[btn].1.is_active_window();
                             layers[layer].buttons[btn].1.set_active(&mut uinput, false);
                             layers[layer].buttons[btn].1.clear_hold();
                             touches.remove(&up.seat_slot());
+                            if active_window && sysinfo_mgr.toggle_titlebar_text() {
+                                needs_complete_redraw = true;
+                                continue;
+                            }
                             match notification_kind {
                                 Some(NotificationButton::Back) => {
                                     normal_layer = notification_return_layer;
@@ -3098,6 +3315,22 @@ mod tests {
     }
 
     #[test]
+    fn battery_warning_requires_colorize_and_low_capacity() {
+        assert!(battery_warning(10, BatteryState::NotCharging, true));
+        assert!(!battery_warning(11, BatteryState::NotCharging, true));
+        assert!(!battery_warning(10, BatteryState::NotCharging, false));
+        assert!(!battery_warning(10, BatteryState::Charging, true));
+    }
+
+    #[test]
+    fn titlebar_and_workspace_icon_colors_require_colorize() {
+        assert_eq!(now_playing_icon_color(true), Some((0.0, 0.8, 0.0)));
+        assert_eq!(now_playing_icon_color(false), None);
+        assert_eq!(workspace_icon_color(true), Some((0.55, 0.25, 1.0)));
+        assert_eq!(workspace_icon_color(false), None);
+    }
+
+    #[test]
     fn weather_colorizes_only_sun_moon_and_rain() {
         assert_eq!(weather_icon_color("weather_sunny"), Some((1.0, 0.85, 0.0)));
         assert_eq!(weather_icon_color("weather_moon"), Some((1.0, 0.85, 0.0)));
@@ -3142,6 +3375,24 @@ mod tests {
     }
 
     #[test]
+    fn notification_actions_shrink_content_by_two_each() {
+        let layer = notification_layer();
+        let mgr = NotificationManager::with_actions(&["Reply", "Archive"]);
+
+        assert_eq!(
+            layer.button_spans(Some(&mgr)),
+            vec![
+                (0.0, 0.0),
+                (0.0, 6.0),
+                (6.0, 8.0),
+                (8.0, 10.0),
+                (10.0, 10.0),
+                (10.0, 11.0)
+            ]
+        );
+    }
+
+    #[test]
     fn fractional_stretch_is_preserved_in_layer_spans() {
         let layer = FunctionLayer {
             name: "Fractional".to_string(),
@@ -3164,5 +3415,23 @@ mod tests {
             layer.button_spans(None),
             vec![(0.0, 0.5), (0.5, 2.0), (2.0, 3.0)]
         );
+    }
+
+    #[test]
+    fn active_window_button_is_hittable_for_toggle() {
+        let layer = FunctionLayer {
+            name: "Titlebar".to_string(),
+            displays_time: false,
+            displays_battery: false,
+            displays_sysinfo: true,
+            displays_slider: false,
+            displays_weather: false,
+            displays_notifications: false,
+            buttons: vec![(0.0, test_button(ButtonImage::ActiveWindow(None, false)))],
+            virtual_button_count: 1.0,
+            faster_refresh: false,
+        };
+
+        assert_eq!(layer.hit(100, 30, 50.0, 15.0, None, None), Some(0));
     }
 }
