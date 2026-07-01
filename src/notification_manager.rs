@@ -12,7 +12,13 @@ struct Notification {
     app: String,
     summary: String,
     body: String,
-    has_actions: bool,
+    actions: Vec<NotificationAction>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NotificationAction {
+    key: String,
+    pub label: String,
 }
 
 pub struct NotificationManager {
@@ -32,9 +38,31 @@ impl NotificationManager {
                     app: "app".to_string(),
                     summary: format!("summary {id}"),
                     body: String::new(),
-                    has_actions: false,
+                    actions: Vec::new(),
                 })
                 .collect(),
+            index: 0,
+            dnd: false,
+            last_refresh: Instant::now(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_actions(labels: &[&str]) -> NotificationManager {
+        NotificationManager {
+            notifications: vec![Notification {
+                id: 1,
+                app: "app".to_string(),
+                summary: "summary".to_string(),
+                body: String::new(),
+                actions: labels
+                    .iter()
+                    .map(|label| NotificationAction {
+                        key: label.to_lowercase(),
+                        label: label.to_string(),
+                    })
+                    .collect(),
+            }],
             index: 0,
             dnd: false,
             last_refresh: Instant::now(),
@@ -120,13 +148,35 @@ impl NotificationManager {
         let Some(n) = self.notifications.get(self.index) else {
             return;
         };
-        if n.has_actions {
+        if !n.actions.is_empty() {
             let _ = Command::new("makoctl")
                 .arg("invoke")
                 .arg("-n")
                 .arg(n.id.to_string())
                 .spawn();
         }
+    }
+
+    pub fn current_actions(&self) -> &[NotificationAction] {
+        self.notifications
+            .get(self.index)
+            .map(|n| n.actions.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn invoke_action(&self, action_index: usize) {
+        let Some(n) = self.notifications.get(self.index) else {
+            return;
+        };
+        let Some(action) = n.actions.get(action_index) else {
+            return;
+        };
+        let _ = Command::new("makoctl")
+            .arg("invoke")
+            .arg("-n")
+            .arg(n.id.to_string())
+            .arg(action.key.as_str())
+            .spawn();
     }
 
     pub fn dismiss_current(&mut self) {
@@ -193,13 +243,29 @@ fn load_notifications() -> Vec<Notification> {
         .unwrap_or_default()
         .into_iter()
         .filter_map(|value| {
-            let actions = value.get("actions").and_then(Value::as_object);
+            let actions = value
+                .get("actions")
+                .and_then(Value::as_object)
+                .map(|actions| {
+                    let mut actions = actions
+                        .iter()
+                        .filter_map(|(key, label)| {
+                            Some(NotificationAction {
+                                key: key.clone(),
+                                label: label.as_str()?.to_string(),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    actions.sort_by(|a, b| a.label.cmp(&b.label));
+                    actions
+                })
+                .unwrap_or_default();
             Some(Notification {
                 id: value.get("id")?.as_u64()?,
                 app: string_field(&value, "app_name"),
                 summary: string_field(&value, "summary"),
                 body: string_field(&value, "body"),
-                has_actions: actions.map(|a| !a.is_empty()).unwrap_or(false),
+                actions,
             })
         })
         .collect()
