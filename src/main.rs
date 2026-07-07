@@ -45,6 +45,8 @@ mod display;
 mod fonts;
 mod notification_manager;
 mod pixel_shift;
+#[cfg(feature = "simulator")]
+mod simulator;
 mod slider;
 mod sysinfo_manager;
 mod t2_usb;
@@ -1181,13 +1183,21 @@ fn try_load_image(
         // .flatten() removes `None` and unwraps `Some` values
         locations = candidates.into_iter().flatten().collect();
     } else {
-        // Standard file icons
-        locations = vec![
+        // Standard file icons. TINF_DFR_SHARE_DIR (used by the simulator and
+        // checkout runs) is searched first so icons resolve without installing.
+        let mut paths = Vec::new();
+        if let Some(dir) = env::var_os("TINY_DFR_SHARE_DIR") {
+            let dir = PathBuf::from(dir);
+            paths.push(dir.join(format!("{name}.svg")));
+            paths.push(dir.join(format!("{name}.png")));
+        }
+        paths.extend([
             PathBuf::from(format!("/etc/tiny-dfr/{name}.svg")),
             PathBuf::from(format!("/etc/tiny-dfr/{name}.png")),
             PathBuf::from(format!("/usr/share/tiny-dfr/{name}.svg")),
             PathBuf::from(format!("/usr/share/tiny-dfr/{name}.png")),
-        ];
+        ]);
+        locations = paths;
     };
 
     // Try to load each candidate
@@ -2716,6 +2726,12 @@ fn try_touchbar_usb_recovery() {
 }
 
 fn main() {
+    #[cfg(feature = "simulator")]
+    if env::args().any(|a| a == "--simulate" || a == "--sim") {
+        simulator::run();
+        return;
+    }
+
     let mut drm = match open_drm_backend(false) {
         Some(drm) => drm,
         None => {

@@ -16,6 +16,16 @@ use std::{collections::BTreeMap, env, fmt, fs::read_to_string, os::fd::AsFd, pat
 const DEFAULT_CFG_PATH: &str = "/usr/share/tiny-dfr/config.toml";
 const SYSTEM_CFG_PATH: &str = "/etc/tiny-dfr/config.toml";
 
+// The bundled config lives in the share dir. Normally that's
+// /usr/share/tiny-dfr, but the simulator (and anyone running from a checkout)
+// can point at the repo's share/tiny-dfr via TINY_DFR_SHARE_DIR.
+fn default_cfg_path() -> PathBuf {
+    match env::var_os("TINY_DFR_SHARE_DIR") {
+        Some(dir) => PathBuf::from(dir).join("config.toml"),
+        None => PathBuf::from(DEFAULT_CFG_PATH),
+    }
+}
+
 pub struct Config {
     pub default_layer: String,
     pub show_button_outlines: bool,
@@ -210,7 +220,7 @@ fn config_paths() -> Vec<PathBuf> {
 
 fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
     let mut base =
-        toml::from_str::<ConfigProxy>(&read_to_string(DEFAULT_CFG_PATH).unwrap()).unwrap();
+        toml::from_str::<ConfigProxy>(&read_to_string(default_cfg_path()).unwrap()).unwrap();
     for path in config_paths() {
         match read_to_string(&path).and_then(|contents| {
             toml::from_str::<ConfigProxy>(&contents)
