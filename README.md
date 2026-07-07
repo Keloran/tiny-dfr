@@ -111,6 +111,34 @@ cp /etc/tiny-dfr/config.toml ~/.config/tiny-dfr/config.toml
 Changes to `/etc/tiny-dfr/config.toml` or the user config file are reloaded while
 tiny-dfr is running.
 
+## Simulator (no hardware)
+
+To run tiny-dfr on a machine without a Touch Bar, build with the `simulator`
+feature and pass `--simulate`. It renders the configured layers into a normal
+window and maps mouse clicks to touches, reusing the real drawing and
+hit-testing code.
+
+```sh
+cargo run --features simulator -- --simulate
+```
+
+- Assets and config are loaded from the checkout's `share/tiny-dfr` (or from an
+  installed `/usr/share/tiny-dfr`); set `TINY_DFR_SHARE_DIR` to override.
+- Window size defaults to `1710x50`; set `TINY_DFR_SIM_SIZE=WxH` to change it.
+  The buttons always stretch to fill the current window size, so resizing works.
+- On a tiling WM the window gets tiled instead of shown as a thin strip. On
+  Hyprland, float it to keep the Touch Bar shape:
+  ```
+  windowrulev2 = float, title:^(tiny-dfr simulator)$
+  windowrulev2 = size 1710 50, title:^(tiny-dfr simulator)$
+  windowrulev2 = center, title:^(tiny-dfr simulator)$
+  ```
+- Controls: click a button to tap it, number keys `1`-`9` switch layers, hold
+  `LeftCtrl` for the FKeys layer, `Esc` quits.
+- If `/dev/uinput` is writable the simulated buttons emit real key events (a
+  functional on-screen Touch Bar); otherwise it runs preview-only and just logs
+  presses to the console.
+
 ## License
 
 tiny-dfr is licensed under the MIT license, as included in the [LICENSE](LICENSE) file.

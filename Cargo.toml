@@ -34,6 +34,12 @@ hyprland = { version = "0.4.0-beta.3" }
 serde_json = "1"
 cosmic-client-toolkit = { git = "https://github.com/pop-os/cosmic-protocols", package = "cosmic-client-toolkit" }
 wayland-backend = { version = "0.3.11", features = ["client_system"] }
+minifb = { version = "0.27", optional = true }
+
+[features]
+# On-screen Touch Bar simulator: `cargo build --features simulator`,
+# run with `tiny-dfr --simulate`.
+simulator = ["dep:minifb"]
 
 [build-dependencies]
 pkg-config = "0.3"
