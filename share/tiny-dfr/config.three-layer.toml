@@ -34,9 +34,6 @@ ActiveBrightness = 128
 # Set to 0 to disable double-press layer switching
 DoublePressSwitchLayers = 200
 
-# ESC key configuration
-ShowEscKey = false
-
 # Keep root privileges for Hyprland IPC access
 # Set to false if Hyprland runs as your user and tiny-dfr runs with sudo
 DropPrivileges = false

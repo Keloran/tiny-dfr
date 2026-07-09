@@ -27,11 +27,8 @@ ActiveBrightness = 128
 # FN has a fixed meaning in this config: show F-keys while held.
 DoublePressSwitchLayers = 0
 
-# ESC is configurable. If enabled, the system info layout is:
-#   esc, settings, cpu, mem, title, workspace, battery, clock
-# If disabled, the system info layout is:
-#   settings, cpu, mem, title, workspace, battery, clock
-ShowEscKey = false
+# ESC is not added automatically; add `{ Text = "esc", Action = "Esc" }` to any
+# layer that should have one. This config leaves it off.
 
 # Keep root privileges so Hyprland IPC remains accessible when tiny-dfr is
 # launched with sudo while Hyprland runs as your user.
@@ -39,45 +36,32 @@ DropPrivileges = false
 
 # SystemInfoLayerKeys = Default dashboard view (shown without FN pressed)
 # This shows system information like macOS Touch Bar
+#
+# The stats live in a "pullout": collapsed, the layer shows the title/workspace
+# plus a "<" toggle and the last 2 pullout buttons (battery, time). Pressing "<"
+# slides a panel out from the right over the parent, revealing all the stats;
+# ">" collapses it again.
+#   Button = "pullout"  marks the pullout; it is replaced in place by the toggle.
+#   Option = "2"        how many trailing Children stay visible while collapsed.
+#   Stretch = 0.66      fraction of the bar the expanded panel covers (0.25-0.95).
+#   Children = [...]    the full set of buttons, shown left-to-right when expanded.
 SystemInfoLayerKeys = [
     # Switch to media controls
     { Icon = "settings", LayerToggle = "Media", Action = [], Stretch = 1 },
 
-    # CPU usage display
-    # Optional: Add Command to execute when pressed. Examples:
-    #   Command = "kitty htop"                                  # Open htop in kitty terminal
-    #   Command = "alacritty -e htop"                           # Open htop in alacritty
-    { Icon = "cpu", Button = "CpuUsage", Action = [], Stretch = 2 },
-    
-    # Memory usage display
-    # Optional: Add Command to execute when pressed. Examples:
-    #   Command = "kitty htop"                                  # Open htop in kitty terminal
-    { Icon = "memory", Button = "MemoryUsage", Action = [], Stretch = 2 },
-    
     # Active window title from Hyprland.
-    # Increase this Stretch and/or reduce ActiveWorkspace Stretch for a wider title box.
     { Button = "ActiveWindow", Action = [], Stretch = 5 },
-    
+
     # Current workspace/desktop from Hyprland.
-    # Increase this if you use long workspace names; keep it low for a wider title box.
-    # Optional: Add Command to execute when pressed. Examples:
-    #   Command = "hyprctl dispatch hymission:toggle"           # Toggle hymission mission control
-    #   Command = "hyprctl dispatch overview:toggle"            # Toggle overview plugin
-    #   Command = "hyprctl dispatch workspace 1"                # Switch to workspace 1
-    #   Command = "rofi -show window"                           # Show rofi window switcher
     { Icon = "window", Button = "ActiveWorkspace", Action = [], Stretch = 1 },
-    
-    # Battery status
-    # Optional: Add Command to execute when pressed. Examples:
-    #   Command = "/usr/share/tiny-dfr/cycle-power-profile.sh" # Cycle: power-saver -> balanced -> performance
-    #   Command = "powerprofilesctl set power-saver"            # Set power saver mode
-    #   Command = "powerprofilesctl set balanced"               # Set balanced mode
-    #   Command = "powerprofilesctl set performance"            # Set performance mode
-    #   Command = "gnome-control-center power"                  # Open power settings
-    { Button = "battery", Option = "both", Action = [], Stretch = 2 },
-    
-    # Current time
-    { Button = "time", Option = "24hr", Action = [], Stretch = 2 }
+
+    # Pullout: stats that expand over the right ~2/3 of the bar.
+    { Button = "pullout", Option = "2", Stretch = 0.66, Children = [
+        { Icon = "cpu", Button = "CpuUsage", Action = [], Stretch = 2 },
+        { Icon = "memory", Button = "MemoryUsage", Action = [], Stretch = 2 },
+        { Button = "battery", Option = "both", Action = [], Stretch = 2 },
+        { Button = "time", Option = "24hr", Action = [], Stretch = 2 },
+    ] },
 ]
 
 # PrimaryLayerKeys = FN layer (shown when FN is pressed)
