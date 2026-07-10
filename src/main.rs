@@ -35,6 +35,7 @@ use std::{
     },
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 use udev::MonitorBuilder;
@@ -1283,8 +1284,21 @@ fn get_battery_state(battery: &str) -> (u32, BatteryState) {
 }
 
 fn get_power_profile() -> Option<String> {
-    // Try to get current power profile from powerprofilesctl
-    std::process::Command::new("powerprofilesctl")
+    // The profile is read by spawning `powerprofilesctl`, which costs tens of
+    // milliseconds. This runs during every battery draw, so cache it briefly:
+    // without the cache a redraw loop (e.g. a pullout animation at 60fps) spends
+    // all its time forking this subprocess and drops to a few frames a second.
+    static CACHE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
+    const TTL: Duration = Duration::from_secs(5);
+
+    let mut cache = CACHE.lock().unwrap();
+    if let Some((fetched_at, value)) = cache.as_ref() {
+        if fetched_at.elapsed() < TTL {
+            return value.clone();
+        }
+    }
+
+    let fresh = std::process::Command::new("powerprofilesctl")
         .arg("get")
         .output()
         .ok()
@@ -1303,7 +1317,9 @@ fn get_power_profile() -> Option<String> {
                 "performance" => "PRF".to_string(),
                 other => other.chars().take(3).collect::<String>().to_uppercase(),
             }
-        })
+        });
+    *cache = Some((Instant::now(), fresh.clone()));
+    fresh
 }
 
 impl Button {
@@ -2177,16 +2193,17 @@ pub struct PulloutAnim {
 }
 
 impl PulloutAnim {
-    // Reveal fraction (0..1) for the current instant, smoothstep-eased.
+    // Reveal fraction (0..1) for the current instant. Linear, so the panel
+    // starts widening on the very first frame rather than easing in (which reads
+    // as a delay before anything moves).
     fn reveal(&self, now: Instant) -> f64 {
         let t = (now.saturating_duration_since(self.start).as_secs_f64()
             / PULLOUT_ANIM.as_secs_f64())
         .clamp(0.0, 1.0);
-        let eased = t * t * (3.0 - 2.0 * t);
         if self.collapsing {
-            1.0 - eased
+            1.0 - t
         } else {
-            eased
+            t
         }
     }
     fn done(&self, now: Instant) -> bool {
@@ -2455,15 +2472,17 @@ impl FunctionLayer {
         let overlay = self.is_overlay();
         let origin_x = self.overlay_origin(width as f64);
         let region_w = width as f64 - origin_x;
-        // While a panel slides in/out, shift its whole layout right by the
-        // not-yet-revealed portion of its width; the parent shows through to the
-        // left of `panel_origin`. 0 once fully revealed (or for normal layers).
-        let slide_dx = if overlay {
-            (1.0 - self.overlay_reveal.clamp(0.0, 1.0)) * region_w
+        // A panel reveals by widening from its left divider rightward: the
+        // covered region grows from just the divider to the full slice as
+        // reveal goes 0 -> 1. Buttons keep their final positions and are clipped
+        // to the covered part, so the panel appears to grow out from the toggle
+        // rather than sliding in from the far edge.
+        let reveal = if overlay {
+            self.overlay_reveal.clamp(0.0, 1.0)
         } else {
-            0.0
+            1.0
         };
-        let panel_origin = origin_x + slide_dx;
+        let covered_right = origin_x + reveal * region_w;
         let virtual_button_width =
             (region_w - pixel_shift_width as f64 - total_spacing) / self.virtual_button_count;
         let radius = 8.0f64;
@@ -2473,20 +2492,24 @@ impl FunctionLayer {
 
         if complete_redraw {
             if overlay {
-                // Mask the parent underneath, then a divider so the panel reads
-                // as floating on top rather than replacing the layer. Both track
-                // `panel_origin` so the parent stays visible where the sliding
-                // panel hasn't reached yet.
+                // Mask only the covered part of the parent, with the divider at
+                // the fixed left edge; the parent shows through to the right of
+                // `covered_right` until the panel widens over it.
                 c.set_source_rgb(0.0, 0.0, 0.0);
-                c.rectangle(panel_origin, 0.0, width as f64 - panel_origin, height as f64);
+                c.rectangle(origin_x, 0.0, covered_right - origin_x, height as f64);
                 c.fill().unwrap();
                 c.set_source_rgb(0.3, 0.3, 0.3);
-                c.rectangle(panel_origin, bot - radius, 2.0, top - bot + radius * 2.0);
+                c.rectangle(origin_x, bot - radius, 2.0, top - bot + radius * 2.0);
                 c.fill().unwrap();
             } else {
                 c.set_source_rgb(0.0, 0.0, 0.0);
                 c.paint().unwrap();
             }
+        }
+        // Confine the panel's buttons to the revealed width while animating.
+        if overlay && reveal < 1.0 {
+            c.rectangle(origin_x, 0.0, covered_right - origin_x, height as f64);
+            c.clip();
         }
         c.set_font_face(&config.font_face);
         c.set_font_size(config.font_size);
@@ -2516,7 +2539,7 @@ impl FunctionLayer {
                 .floor()
                 + pixel_shift_x
                 + (pixel_shift_width / 2) as f64
-                + panel_origin;
+                + origin_x;
 
             let button_width = ((item.end - item.start) * virtual_button_width).floor();
 
