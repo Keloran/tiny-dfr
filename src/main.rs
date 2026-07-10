@@ -3044,7 +3044,7 @@ fn real_main(drm: &mut DrmBackend) {
             {
                 // Draw the parent as the base, then the panel over its right side.
                 let (parent, panel) = two_mut(&mut layers, parent_idx, active_layer);
-                let mut clips = parent.draw(
+                parent.draw(
                     &cfg,
                     width as i32,
                     height as i32,
@@ -3055,7 +3055,7 @@ fn real_main(drm: &mut DrmBackend) {
                     Some(&weather_mgr),
                     Some(&notification_mgr),
                 );
-                clips.extend(panel.draw(
+                panel.draw(
                     &cfg,
                     width as i32,
                     height as i32,
@@ -3065,8 +3065,16 @@ fn real_main(drm: &mut DrmBackend) {
                     Some(&sysinfo_mgr),
                     Some(&weather_mgr),
                     Some(&notification_mgr),
-                ));
-                clips
+                );
+                // Both draws are full-frame complete redraws that each return a
+                // whole-screen clip. Passing both to drm.dirty() flushes the
+                // entire Touch Bar framebuffer twice per redraw; on real T2
+                // hardware that double full-frame transfer overruns the
+                // appletbdrm/apple-bce USB pipe and wedges the controller (the
+                // simulator ignores clips, so it never showed up there). The
+                // composite is already on the surface, so emit exactly one
+                // full-frame damage rect.
+                vec![ClipRect::new(0, 0, height, width)]
             } else {
                 let sysinfo_mgr_ref = layers[active_layer].displays_sysinfo.then_some(&sysinfo_mgr);
                 let weather_mgr_ref = layers[active_layer].displays_weather.then_some(&weather_mgr);
