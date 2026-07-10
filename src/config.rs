@@ -51,8 +51,6 @@ struct ConfigProxy {
     adaptive_brightness: Option<bool>,
     active_brightness: Option<u32>,
     double_press_switch_layers: Option<u32>,
-    auto_add_esc_key: Option<bool>,
-    show_esc_key: Option<bool>,
     drop_privileges: Option<bool>,
     weather_location: Option<String>,
     weather_units: Option<String>,
@@ -74,8 +72,6 @@ impl ConfigProxy {
         self.double_press_switch_layers = other
             .double_press_switch_layers
             .or(self.double_press_switch_layers);
-        self.auto_add_esc_key = other.auto_add_esc_key.or(self.auto_add_esc_key);
-        self.show_esc_key = other.show_esc_key.or(self.show_esc_key);
         self.drop_privileges = other.drop_privileges.or(self.drop_privileges);
         self.weather_location = other.weather_location.or(self.weather_location.take());
         self.weather_units = other.weather_units.or(self.weather_units.take());
@@ -171,6 +167,115 @@ mod tests {
         assert_eq!(layers[0].0, "Child");
         assert!(layers[0].1[0].colorize);
     }
+
+    #[test]
+    fn pullout_splits_into_collapsed_and_expanded() {
+        let text = |t: &str| ButtonConfig {
+            text: Some(t.to_string()),
+            ..ButtonConfig::default()
+        };
+        let keys = vec![
+            text("esc"),
+            text("title"),
+            ButtonConfig {
+                button: Some("pullout".to_string()),
+                option: Some("2".to_string()),
+                children: Some(vec![text("weather"), text("cpu"), text("battery"), text("date")]),
+                ..ButtonConfig::default()
+            },
+        ];
+
+        let (collapsed, pullout) = expand_pullout("SystemInfo", keys);
+        let p = pullout.unwrap();
+
+        // collapsed parent renders normally: esc, title, "<", battery, date
+        let labels: Vec<_> = collapsed.iter().map(|b| b.text.clone().unwrap()).collect();
+        assert_eq!(labels, ["esc", "title", "<", "battery", "date"]);
+        assert_eq!(collapsed[2].layer_toggle.as_deref(), Some("SystemInfo__pullout"));
+
+        // panel overlays the parent: ">" toggle + all children, no parent buttons
+        assert_eq!(p.name, "SystemInfo__pullout");
+        assert_eq!(p.parent, "SystemInfo");
+        let labels: Vec<_> = p.keys.iter().map(|b| b.text.clone().unwrap()).collect();
+        assert_eq!(labels, [">", "weather", "cpu", "battery", "date"]);
+        assert_eq!(p.keys[0].layer_toggle.as_deref(), Some("SystemInfo"));
+    }
+}
+
+const PULLOUT_SUFFIX: &str = "__pullout";
+const DEFAULT_PULLOUT_VISIBLE: usize = 2;
+const DEFAULT_PULLOUT_COVERAGE: f64 = 0.66;
+
+fn pullout_toggle(label: &str, target: String) -> ButtonConfig {
+    // "pullout_toggle" makes with_config build a LayerToggle button (accented
+    // background) rather than a plain text button, so the "<"/">" stands out
+    // when the panel is drawn on top of the parent.
+    ButtonConfig {
+        button: Some("pullout_toggle".to_string()),
+        text: Some(label.to_string()),
+        layer_toggle: Some(target),
+        ..ButtonConfig::default()
+    }
+}
+
+// A pullout panel that overlays the right portion of its parent layer.
+pub struct Pullout {
+    pub name: String,             // panel layer name ("<parent>__pullout")
+    pub keys: Vec<ButtonConfig>,  // ">" toggle + all children
+    pub parent: String,           // parent layer name, drawn underneath
+    pub coverage: f64,            // fraction of the bar the panel covers, from the right
+}
+
+// A pullout marker ({ Button = "pullout", Option = "N", Stretch = C, Children = [...] })
+// leaves the collapsed layer looking normal: the marker is replaced in place by a
+// "<" toggle plus the trailing N children (so the parent renders as usual). Pressing
+// "<" switches to a separate panel layer ("<name>__pullout") that draws a ">" toggle
+// plus all children over the right `C` fraction of the parent, masking it. Only the
+// first marker in a layer is used. Returns the collapsed keys and, if a marker was
+// found, the panel.
+fn expand_pullout(name: &str, keys: Vec<ButtonConfig>) -> (Vec<ButtonConfig>, Option<Pullout>) {
+    let Some(m) = keys
+        .iter()
+        .position(|b| matches!(b.button.as_deref(), Some("pullout" | "Pullout")))
+    else {
+        return (keys, None);
+    };
+    if keys[m + 1..]
+        .iter()
+        .any(|b| matches!(b.button.as_deref(), Some("pullout" | "Pullout")))
+    {
+        eprintln!("Layer '{name}' has multiple pullout markers; only the first is used");
+    }
+    let children = keys[m].children.clone().unwrap_or_default();
+    let visible = keys[m]
+        .option
+        .as_deref()
+        .and_then(|o| o.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_PULLOUT_VISIBLE)
+        .min(children.len());
+    let coverage = keys[m]
+        .stretch
+        .unwrap_or(DEFAULT_PULLOUT_COVERAGE)
+        .clamp(0.25, 0.95);
+    let expanded_name = format!("{name}{PULLOUT_SUFFIX}");
+
+    let mut collapsed = keys[..m].to_vec();
+    collapsed.push(pullout_toggle("<", expanded_name.clone()));
+    collapsed.extend_from_slice(&children[children.len() - visible..]);
+    collapsed.extend_from_slice(&keys[m + 1..]);
+
+    let mut panel = vec![pullout_toggle(">", name.to_string())];
+    panel.extend(children);
+
+    (
+        collapsed,
+        Some(Pullout {
+            name: expanded_name,
+            keys: panel,
+            parent: name.to_string(),
+            coverage,
+        }),
+    )
 }
 
 fn collect_child_layers(buttons: &[ButtonConfig], layers: &mut Vec<(String, Vec<ButtonConfig>)>) {
@@ -218,7 +323,7 @@ fn config_paths() -> Vec<PathBuf> {
     paths
 }
 
-fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
+fn load_config(_width: u16) -> (Config, Vec<FunctionLayer>) {
     let mut base =
         toml::from_str::<ConfigProxy>(&read_to_string(default_cfg_path()).unwrap()).unwrap();
     for path in config_paths() {
@@ -253,46 +358,34 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
     }
     extra_layers.extend(child_layers);
 
-    let show_esc = base
-        .show_esc_key
-        .unwrap_or_else(|| width >= 2170 && base.auto_add_esc_key.unwrap_or(true));
-    if show_esc {
-        for layer in [
-            &mut system_info_layer_keys,
-            &mut primary_layer_keys,
-            &mut media_layer_keys,
-        ] {
-            layer.insert(
-                0,
-                ButtonConfig {
-                    button: None,
-                    option: None,
-                    icon: None,
-                    icon_active: None,
-                    text: Some("esc".into()),
-                    theme: None,
-                    action: vec![Key::Esc],
-                    command: None,
-                    stretch: None,
-                    locale: None,
-                    layer_toggle: None,
-                    weather_day: None,
-                    icon_width: None,
-                    icon_height: None,
-                    stacked: false,
-                    colorize: false,
-                    font_size: None,
-                    max_title_length: None,
-                    children: None,
-                },
-            );
-        }
+    // Expand pullout markers: the parent keeps its collapsed buttons; each
+    // marker also yields an overlay panel layer.
+    let mut pullouts: Vec<Pullout> = Vec::new();
+    for (name, keys) in [
+        ("SystemInfo", &mut system_info_layer_keys),
+        ("FKeys", &mut primary_layer_keys),
+        ("Media", &mut media_layer_keys),
+    ] {
+        let (collapsed, pullout) = expand_pullout(name, std::mem::take(keys));
+        *keys = collapsed;
+        pullouts.extend(pullout);
     }
+    for (name, keys) in extra_layers.iter_mut() {
+        let (collapsed, pullout) = expand_pullout(name, std::mem::take(keys));
+        *keys = collapsed;
+        pullouts.extend(pullout);
+    }
+
     let mut layers = vec![
         FunctionLayer::with_config("SystemInfo", system_info_layer_keys),
         FunctionLayer::with_config("FKeys", primary_layer_keys),
         FunctionLayer::with_config("Media", media_layer_keys),
     ];
+    for p in pullouts {
+        let mut layer = FunctionLayer::with_config(p.name, p.keys);
+        layer.set_overlay(p.parent, p.coverage);
+        layers.push(layer);
+    }
     for (name, keys) in extra_layers {
         if matches!(name.as_str(), "SystemInfo" | "FKeys" | "Media") {
             let key_name = match name.as_str() {

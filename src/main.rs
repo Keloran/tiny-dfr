@@ -1387,6 +1387,10 @@ impl Button {
         } else if matches!(button_name, Some("Time" | "time")) {
             let time = normalize_time_option(option.unwrap_or_else(|| "24hr".to_string()));
             Button::new_time(cfg.action, cfg.command, &time, cfg.locale.as_deref())
+        } else if matches!(button_name, Some("pullout_toggle")) {
+            let target = cfg.layer_toggle.clone().unwrap_or_default();
+            let label = cfg.text.clone().unwrap_or_default();
+            Button::new_layer_toggle(target, label)
         } else if let Some(text) = cfg.text {
             Button::new_text(text, cfg.action)
         } else if matches!(button_name, Some("Battery" | "battery")) {
@@ -2109,6 +2113,10 @@ impl Button {
                     BatteryState::Low => c.set_source_rgb(color, color, color),
                 }
             }
+        } else if matches!(self.image, ButtonImage::LayerToggle(_, _)) {
+            // Accent the pullout "<"/">" toggle so its edge is clear even when
+            // the panel is drawn over another button. Brightens when pressed.
+            c.set_source_rgb(0.0, (color + 0.35).min(1.0), (color + 0.55).min(1.0));
         } else {
             c.set_source_rgb(color, color, color);
         }
@@ -2144,6 +2152,22 @@ pub struct FunctionLayer {
     buttons: Vec<(f64, Button)>,
     virtual_button_count: f64,
     faster_refresh: bool,
+    // Set when this layer is a pullout panel: it draws over the right
+    // `overlay_coverage` fraction of the `overlay_parent` layer, masking it.
+    overlay_parent: Option<String>,
+    overlay_coverage: f64,
+}
+
+// Two distinct elements of the same slice, mutably.
+fn two_mut<T>(slice: &mut [T], a: usize, b: usize) -> (&mut T, &mut T) {
+    assert_ne!(a, b);
+    if a < b {
+        let (l, r) = slice.split_at_mut(b);
+        (&mut l[a], &mut r[0])
+    } else {
+        let (l, r) = slice.split_at_mut(a);
+        (&mut r[0], &mut l[b])
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2296,6 +2320,23 @@ impl FunctionLayer {
             buttons,
             virtual_button_count,
             faster_refresh,
+            overlay_parent: None,
+            overlay_coverage: 0.0,
+        }
+    }
+    fn set_overlay(&mut self, parent: String, coverage: f64) {
+        self.overlay_parent = Some(parent);
+        self.overlay_coverage = coverage;
+    }
+    fn is_overlay(&self) -> bool {
+        self.overlay_parent.is_some()
+    }
+    // Left x (logical pixels) where a pullout panel begins; 0 for normal layers.
+    fn overlay_origin(&self, width: f64) -> f64 {
+        if self.is_overlay() {
+            width * (1.0 - self.overlay_coverage)
+        } else {
+            0.0
         }
     }
     fn draw(
@@ -2326,16 +2367,33 @@ impl FunctionLayer {
         let items = self.layout_items(notification_mgr);
         let visible_buttons = items.iter().filter(|item| item.end > item.start).count();
         let total_spacing = BUTTON_SPACING_PX as f64 * visible_buttons.saturating_sub(1) as f64;
+        // Pullout panels lay out within the right slice of the bar instead of
+        // the full width; everything below offsets by origin_x and packs into
+        // region_w so the parent stays visible to the left.
+        let overlay = self.is_overlay();
+        let origin_x = self.overlay_origin(width as f64);
+        let region_w = width as f64 - origin_x;
         let virtual_button_width =
-            (width as f64 - pixel_shift_width as f64 - total_spacing) / self.virtual_button_count;
+            (region_w - pixel_shift_width as f64 - total_spacing) / self.virtual_button_count;
         let radius = 8.0f64;
         let bot = (height as f64) * 0.15;
         let top = (height as f64) * 0.85;
         let (pixel_shift_x, pixel_shift_y) = pixel_shift;
 
         if complete_redraw {
-            c.set_source_rgb(0.0, 0.0, 0.0);
-            c.paint().unwrap();
+            if overlay {
+                // Mask the parent underneath, then a divider so the panel reads
+                // as floating on top rather than replacing the layer.
+                c.set_source_rgb(0.0, 0.0, 0.0);
+                c.rectangle(origin_x, 0.0, region_w, height as f64);
+                c.fill().unwrap();
+                c.set_source_rgb(0.3, 0.3, 0.3);
+                c.rectangle(origin_x, bot - radius, 2.0, top - bot + radius * 2.0);
+                c.fill().unwrap();
+            } else {
+                c.set_source_rgb(0.0, 0.0, 0.0);
+                c.paint().unwrap();
+            }
         }
         c.set_font_face(&config.font_face);
         c.set_font_size(config.font_size);
@@ -2364,7 +2422,8 @@ impl FunctionLayer {
                 + visible_i as f64 * BUTTON_SPACING_PX as f64)
                 .floor()
                 + pixel_shift_x
-                + (pixel_shift_width / 2) as f64;
+                + (pixel_shift_width / 2) as f64
+                + origin_x;
 
             let button_width = ((item.end - item.start) * virtual_button_width).floor();
 
@@ -2514,10 +2573,17 @@ impl FunctionLayer {
         i: Option<usize>,
         notification_mgr: Option<&NotificationManager>,
     ) -> Option<usize> {
+        // Touches left of a pullout panel belong to the parent layer, not the
+        // panel; the caller re-runs hit() against the parent for those.
+        let origin_x = self.overlay_origin(width as f64);
+        if self.is_overlay() && i.is_none() && x < origin_x {
+            return None;
+        }
         let items = self.layout_items(notification_mgr);
         let visible_buttons = items.iter().filter(|item| item.end > item.start).count();
         let total_spacing = BUTTON_SPACING_PX as f64 * visible_buttons.saturating_sub(1) as f64;
-        let virtual_button_width = (width as f64 - total_spacing) / self.virtual_button_count;
+        let virtual_button_width =
+            (width as f64 - origin_x - total_spacing) / self.virtual_button_count;
 
         let i = if let Some(slot) = i {
             items
@@ -2542,7 +2608,8 @@ impl FunctionLayer {
                         .filter(|item| item.end > item.start)
                         .count();
                     let left = item.start * virtual_button_width
-                        + visible_i as f64 * BUTTON_SPACING_PX as f64;
+                        + visible_i as f64 * BUTTON_SPACING_PX as f64
+                        + origin_x;
                     let right = left + (item.end - item.start) * virtual_button_width;
                     x >= left && x <= right
                 })
@@ -2563,7 +2630,8 @@ impl FunctionLayer {
 
         let left_edge = (item.start * virtual_button_width
             + visible_i as f64 * BUTTON_SPACING_PX as f64)
-            .floor();
+            .floor()
+            + origin_x;
 
         let button_width = ((item.end - item.start) * virtual_button_width).floor();
 
@@ -2601,8 +2669,10 @@ impl FunctionLayer {
 
     // Fraction (0.0..=1.0) of the touch x-position across button `i`'s width.
     fn slider_fraction(&self, width: u16, i: usize, x: f64) -> f64 {
+        let origin_x = self.overlay_origin(width as f64);
         let total_spacing = BUTTON_SPACING_PX as f64 * self.buttons.len().saturating_sub(1) as f64;
-        let virtual_button_width = (width as f64 - total_spacing) / self.virtual_button_count;
+        let virtual_button_width =
+            (width as f64 - origin_x - total_spacing) / self.virtual_button_count;
 
         let start = self.buttons[i].0;
         let end = if i + 1 < self.buttons.len() {
@@ -2612,7 +2682,7 @@ impl FunctionLayer {
         };
 
         let left_edge =
-            (start * virtual_button_width + i as f64 * BUTTON_SPACING_PX as f64).floor();
+            (start * virtual_button_width + i as f64 * BUTTON_SPACING_PX as f64).floor() + origin_x;
         let button_width = ((end - start) * virtual_button_width).floor();
 
         ((x - left_edge) / button_width).clamp(0.0, 1.0)
@@ -2953,38 +3023,68 @@ fn real_main(drm: &mut DrmBackend) {
             next_timeout_ms = min(next_timeout_ms, 50);
         }
 
+        // A pullout panel composites over its parent, so redraw the whole thing
+        // whenever either changes rather than tracking partial regions.
+        if layers[active_layer].is_overlay()
+            && layers[active_layer].buttons.iter().any(|b| b.1.changed)
+        {
+            needs_complete_redraw = true;
+        }
         if needs_complete_redraw || layers[active_layer].buttons.iter().any(|b| b.1.changed) {
             let shift = if cfg.enable_pixel_shift {
                 pixel_shift.get()
             } else {
                 (0.0, 0.0)
             };
-            let sysinfo_mgr_ref = if layers[active_layer].displays_sysinfo {
-                Some(&sysinfo_mgr)
+            let clips = if let Some(parent_idx) = layers[active_layer]
+                .overlay_parent
+                .clone()
+                .and_then(|name| layer_index(&layers, &name))
+                .filter(|&idx| idx != active_layer)
+            {
+                // Draw the parent as the base, then the panel over its right side.
+                let (parent, panel) = two_mut(&mut layers, parent_idx, active_layer);
+                let mut clips = parent.draw(
+                    &cfg,
+                    width as i32,
+                    height as i32,
+                    &surface,
+                    shift,
+                    true,
+                    Some(&sysinfo_mgr),
+                    Some(&weather_mgr),
+                    Some(&notification_mgr),
+                );
+                clips.extend(panel.draw(
+                    &cfg,
+                    width as i32,
+                    height as i32,
+                    &surface,
+                    shift,
+                    true,
+                    Some(&sysinfo_mgr),
+                    Some(&weather_mgr),
+                    Some(&notification_mgr),
+                ));
+                clips
             } else {
-                None
+                let sysinfo_mgr_ref = layers[active_layer].displays_sysinfo.then_some(&sysinfo_mgr);
+                let weather_mgr_ref = layers[active_layer].displays_weather.then_some(&weather_mgr);
+                let notification_mgr_ref = layers[active_layer]
+                    .displays_notifications
+                    .then_some(&notification_mgr);
+                layers[active_layer].draw(
+                    &cfg,
+                    width as i32,
+                    height as i32,
+                    &surface,
+                    shift,
+                    needs_complete_redraw,
+                    sysinfo_mgr_ref,
+                    weather_mgr_ref,
+                    notification_mgr_ref,
+                )
             };
-            let weather_mgr_ref = if layers[active_layer].displays_weather {
-                Some(&weather_mgr)
-            } else {
-                None
-            };
-            let notification_mgr_ref = if layers[active_layer].displays_notifications {
-                Some(&notification_mgr)
-            } else {
-                None
-            };
-            let clips = layers[active_layer].draw(
-                &cfg,
-                width as i32,
-                height as i32,
-                &surface,
-                shift,
-                needs_complete_redraw,
-                sysinfo_mgr_ref,
-                weather_mgr_ref,
-                notification_mgr_ref,
-            );
             let data = surface.data().unwrap();
             drm.map().unwrap().as_mut()[..data.len()].copy_from_slice(&data);
             drm.dirty(&clips).unwrap();
@@ -3051,20 +3151,34 @@ fn real_main(drm: &mut DrmBackend) {
                                 } else {
                                     None
                                 };
-                            if let Some(btn) = layers[active_layer].hit(
-                                width,
-                                height,
-                                x,
-                                y,
-                                None,
-                                notification_mgr_ref,
-                            ) {
-                                touches.insert(dn.seat_slot(), (active_layer, btn, Instant::now()));
-                                if btn >= layers[active_layer].buttons.len() {
+                            // On a pullout panel, touches to the left of the
+                            // panel fall through to the parent layer underneath.
+                            let mut hit_layer = active_layer;
+                            let mut hit = layers[active_layer]
+                                .hit(width, height, x, y, None, notification_mgr_ref);
+                            if hit.is_none() {
+                                if let Some(parent_idx) = layers[active_layer]
+                                    .overlay_parent
+                                    .clone()
+                                    .and_then(|name| layer_index(&layers, &name))
+                                {
+                                    let parent_notif = layers[parent_idx]
+                                        .displays_notifications
+                                        .then_some(&notification_mgr);
+                                    hit = layers[parent_idx]
+                                        .hit(width, height, x, y, None, parent_notif);
+                                    if hit.is_some() {
+                                        hit_layer = parent_idx;
+                                    }
+                                }
+                            }
+                            if let Some(btn) = hit {
+                                touches.insert(dn.seat_slot(), (hit_layer, btn, Instant::now()));
+                                if btn >= layers[hit_layer].buttons.len() {
                                     needs_complete_redraw = true;
                                     continue;
                                 }
-                                match layers[active_layer].buttons[btn].1.slider_kind() {
+                                match layers[hit_layer].buttons[btn].1.slider_kind() {
                                     Some(kind) => {
                                         // Double-tap the volume slider to toggle mute.
                                         let mut muted = false;
@@ -3074,7 +3188,7 @@ fn real_main(drm: &mut DrmBackend) {
                                                 .map(|t| now.duration_since(t) < DOUBLE_TAP_TIMEOUT)
                                                 .unwrap_or(false)
                                             {
-                                                layers[active_layer].buttons[btn]
+                                                layers[hit_layer].buttons[btn]
                                                     .1
                                                     .slider_toggle_mute();
                                                 last_volume_tap = None;
@@ -3085,17 +3199,17 @@ fn real_main(drm: &mut DrmBackend) {
                                         }
                                         if !muted {
                                             let frac =
-                                                layers[active_layer].slider_fraction(width, btn, x);
-                                            layers[active_layer].buttons[btn]
+                                                layers[hit_layer].slider_fraction(width, btn, x);
+                                            layers[hit_layer].buttons[btn]
                                                 .1
                                                 .set_slider_fraction(frac);
                                         }
                                     }
                                     None => {
-                                        layers[active_layer].buttons[btn]
+                                        layers[hit_layer].buttons[btn]
                                             .1
                                             .set_active(&mut uinput, true);
-                                        layers[active_layer].buttons[btn].1.start_hold();
+                                        layers[hit_layer].buttons[btn].1.start_hold();
                                     }
                                 }
                             }
@@ -3117,13 +3231,10 @@ fn real_main(drm: &mut DrmBackend) {
                                 let frac = layers[layer].slider_fraction(width, btn, x);
                                 layers[layer].buttons[btn].1.set_slider_fraction(frac);
                             } else {
-                                let notification_mgr_ref =
-                                    if layers[active_layer].displays_notifications {
-                                        Some(&notification_mgr)
-                                    } else {
-                                        None
-                                    };
-                                let hit = layers[active_layer]
+                                let notification_mgr_ref = layers[layer]
+                                    .displays_notifications
+                                    .then_some(&notification_mgr);
+                                let hit = layers[layer]
                                     .hit(width, height, x, y, Some(btn), notification_mgr_ref)
                                     .is_some();
                                 layers[layer].buttons[btn].1.set_active(&mut uinput, hit);
@@ -3279,6 +3390,8 @@ mod tests {
             ],
             virtual_button_count: 11.0,
             faster_refresh: false,
+            overlay_parent: None,
+            overlay_coverage: 0.0,
         }
     }
 
@@ -3425,6 +3538,8 @@ mod tests {
             ],
             virtual_button_count: 3.0,
             faster_refresh: false,
+            overlay_parent: None,
+            overlay_coverage: 0.0,
         };
 
         assert_eq!(
@@ -3446,6 +3561,8 @@ mod tests {
             buttons: vec![(0.0, test_button(ButtonImage::ActiveWindow(None, false)))],
             virtual_button_count: 1.0,
             faster_refresh: false,
+            overlay_parent: None,
+            overlay_coverage: 0.0,
         };
 
         assert_eq!(layer.hit(100, 30, 50.0, 15.0, None, None), Some(0));

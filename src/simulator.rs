@@ -200,23 +200,45 @@ pub fn run() {
             notification_mgr.refresh();
         }
 
-        let sysinfo_ref = layers[active].displays_sysinfo.then_some(&sysinfo_mgr);
-        let weather_ref = layers[active].displays_weather.then_some(&weather_mgr);
-        let notif_ref = layers[active]
-            .displays_notifications
-            .then_some(&notification_mgr);
-
-        layers[active].draw(
-            &cfg,
-            cw as i32,
-            ch as i32,
-            &surface,
-            (0.0, 0.0),
-            true,
-            sysinfo_ref,
-            weather_ref,
-            notif_ref,
-        );
+        // A pullout panel draws over its parent; render the parent first.
+        if let Some(parent_idx) = layers[active]
+            .overlay_parent
+            .clone()
+            .and_then(|name| layer_index(&layers, &name))
+            .filter(|&idx| idx != active)
+        {
+            let (parent, panel) = crate::two_mut(&mut layers, parent_idx, active);
+            for l in [&mut *parent, &mut *panel] {
+                l.draw(
+                    &cfg,
+                    cw as i32,
+                    ch as i32,
+                    &surface,
+                    (0.0, 0.0),
+                    true,
+                    Some(&sysinfo_mgr),
+                    Some(&weather_mgr),
+                    Some(&notification_mgr),
+                );
+            }
+        } else {
+            let sysinfo_ref = layers[active].displays_sysinfo.then_some(&sysinfo_mgr);
+            let weather_ref = layers[active].displays_weather.then_some(&weather_mgr);
+            let notif_ref = layers[active]
+                .displays_notifications
+                .then_some(&notification_mgr);
+            layers[active].draw(
+                &cfg,
+                cw as i32,
+                ch as i32,
+                &surface,
+                (0.0, 0.0),
+                true,
+                sysinfo_ref,
+                weather_ref,
+                notif_ref,
+            );
+        }
         blit(&mut surface, &mut buf, cw, ch);
         window.update_with_buffer(&buf, cw, ch).unwrap();
 
@@ -229,20 +251,37 @@ pub fn run() {
                 let notif = layers[active]
                     .displays_notifications
                     .then_some(&notification_mgr);
-                if let Some(btn) =
-                    layers[active].hit(cw as u16, ch as u16, mx as f64, my as f64, None, notif)
-                {
-                    if btn < layers[active].buttons.len() {
-                        if let Some(kind) = layers[active].buttons[btn].1.slider_kind() {
-                            let frac = layers[active].slider_fraction(cw as u16, btn, mx as f64);
-                            layers[active].buttons[btn].1.set_slider_fraction(frac);
+                // Clicks left of a pullout panel fall through to the parent.
+                let mut hit_layer = active;
+                let mut hit =
+                    layers[active].hit(cw as u16, ch as u16, mx as f64, my as f64, None, notif);
+                if hit.is_none() {
+                    if let Some(parent_idx) = layers[active]
+                        .overlay_parent
+                        .clone()
+                        .and_then(|name| layer_index(&layers, &name))
+                    {
+                        let pn = layers[parent_idx]
+                            .displays_notifications
+                            .then_some(&notification_mgr);
+                        hit = layers[parent_idx].hit(cw as u16, ch as u16, mx as f64, my as f64, None, pn);
+                        if hit.is_some() {
+                            hit_layer = parent_idx;
+                        }
+                    }
+                }
+                if let Some(btn) = hit {
+                    if btn < layers[hit_layer].buttons.len() {
+                        if let Some(kind) = layers[hit_layer].buttons[btn].1.slider_kind() {
+                            let frac = layers[hit_layer].slider_fraction(cw as u16, btn, mx as f64);
+                            layers[hit_layer].buttons[btn].1.set_slider_fraction(frac);
                             log_press(&format!("slider {kind:?}"), functional);
-                            pressed = Some((active, btn, true));
+                            pressed = Some((hit_layer, btn, true));
                         } else {
-                            let label = button_label(&layers[active].buttons[btn].1);
-                            layers[active].buttons[btn].1.set_active(&mut uinput, true);
+                            let label = button_label(&layers[hit_layer].buttons[btn].1);
+                            layers[hit_layer].buttons[btn].1.set_active(&mut uinput, true);
                             log_press(&label, functional);
-                            pressed = Some((active, btn, false));
+                            pressed = Some((hit_layer, btn, false));
                         }
                     }
                 }
@@ -262,6 +301,17 @@ pub fn run() {
                     layers[layer].buttons[btn].1.slider_commit();
                 } else {
                     layers[layer].buttons[btn].1.set_active(&mut uinput, false);
+                    // A layer toggle (e.g. the pullout "<"/">" or a settings
+                    // icon) switches the selected layer on release.
+                    if let Some(target) = layers[layer].buttons[btn]
+                        .1
+                        .layer_toggle_target()
+                        .map(str::to_string)
+                    {
+                        if let Some(idx) = layer_index(&layers, &target) {
+                            selected_layer = idx;
+                        }
+                    }
                 }
             }
         }
