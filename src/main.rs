@@ -2156,6 +2156,87 @@ pub struct FunctionLayer {
     // `overlay_coverage` fraction of the `overlay_parent` layer, masking it.
     overlay_parent: Option<String>,
     overlay_coverage: f64,
+    // How far a pullout panel has slid in from the right edge: 0.0 = fully
+    // hidden (parent visible), 1.0 = fully covering its slice. Animated on
+    // expand/collapse; ignored for non-overlay layers.
+    overlay_reveal: f64,
+}
+
+// A pullout panel slides in/out over up to this long. Kept well under the 2s
+// ceiling so the reveal reads as a smooth glide rather than a lag.
+pub const PULLOUT_ANIM: Duration = Duration::from_millis(300);
+
+// Tracks an in-progress pullout slide. On expand the panel becomes active
+// immediately and slides in; on collapse the panel stays active and slides out,
+// handing back to its parent only once the animation finishes.
+pub struct PulloutAnim {
+    pub panel: usize,
+    pub parent: usize,
+    pub collapsing: bool,
+    pub start: Instant,
+}
+
+impl PulloutAnim {
+    // Reveal fraction (0..1) for the current instant, smoothstep-eased.
+    fn reveal(&self, now: Instant) -> f64 {
+        let t = (now.saturating_duration_since(self.start).as_secs_f64()
+            / PULLOUT_ANIM.as_secs_f64())
+        .clamp(0.0, 1.0);
+        let eased = t * t * (3.0 - 2.0 * t);
+        if self.collapsing {
+            1.0 - eased
+        } else {
+            eased
+        }
+    }
+    fn done(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.start) >= PULLOUT_ANIM
+    }
+}
+
+// Decide how switching from layer `from` to `target` should play out. A switch
+// into a pullout panel slides it in; a switch from a panel back to its parent
+// slides it out. Returns the layer that is active during the transition plus an
+// optional animation to advance each frame. Non-pullout switches are instant.
+pub fn begin_layer_switch(
+    layers: &[FunctionLayer],
+    from: usize,
+    target: usize,
+    now: Instant,
+) -> (usize, Option<PulloutAnim>) {
+    let parent_of = |idx: usize| {
+        layers[idx]
+            .overlay_parent
+            .as_deref()
+            .and_then(|name| layer_index(layers, name))
+    };
+    // Expand: target is a panel — it becomes active and slides in.
+    if layers[target].is_overlay() {
+        if let Some(parent) = parent_of(target) {
+            return (
+                target,
+                Some(PulloutAnim {
+                    panel: target,
+                    parent,
+                    collapsing: false,
+                    start: now,
+                }),
+            );
+        }
+    }
+    // Collapse: leaving a panel back to its own parent — slide out, then switch.
+    if layers[from].is_overlay() && parent_of(from) == Some(target) {
+        return (
+            from,
+            Some(PulloutAnim {
+                panel: from,
+                parent: target,
+                collapsing: true,
+                start: now,
+            }),
+        );
+    }
+    (target, None)
 }
 
 // Two distinct elements of the same slice, mutably.
@@ -2322,6 +2403,7 @@ impl FunctionLayer {
             faster_refresh,
             overlay_parent: None,
             overlay_coverage: 0.0,
+            overlay_reveal: 1.0,
         }
     }
     fn set_overlay(&mut self, parent: String, coverage: f64) {
@@ -2373,6 +2455,15 @@ impl FunctionLayer {
         let overlay = self.is_overlay();
         let origin_x = self.overlay_origin(width as f64);
         let region_w = width as f64 - origin_x;
+        // While a panel slides in/out, shift its whole layout right by the
+        // not-yet-revealed portion of its width; the parent shows through to the
+        // left of `panel_origin`. 0 once fully revealed (or for normal layers).
+        let slide_dx = if overlay {
+            (1.0 - self.overlay_reveal.clamp(0.0, 1.0)) * region_w
+        } else {
+            0.0
+        };
+        let panel_origin = origin_x + slide_dx;
         let virtual_button_width =
             (region_w - pixel_shift_width as f64 - total_spacing) / self.virtual_button_count;
         let radius = 8.0f64;
@@ -2383,12 +2474,14 @@ impl FunctionLayer {
         if complete_redraw {
             if overlay {
                 // Mask the parent underneath, then a divider so the panel reads
-                // as floating on top rather than replacing the layer.
+                // as floating on top rather than replacing the layer. Both track
+                // `panel_origin` so the parent stays visible where the sliding
+                // panel hasn't reached yet.
                 c.set_source_rgb(0.0, 0.0, 0.0);
-                c.rectangle(origin_x, 0.0, region_w, height as f64);
+                c.rectangle(panel_origin, 0.0, width as f64 - panel_origin, height as f64);
                 c.fill().unwrap();
                 c.set_source_rgb(0.3, 0.3, 0.3);
-                c.rectangle(origin_x, bot - radius, 2.0, top - bot + radius * 2.0);
+                c.rectangle(panel_origin, bot - radius, 2.0, top - bot + radius * 2.0);
                 c.fill().unwrap();
             } else {
                 c.set_source_rgb(0.0, 0.0, 0.0);
@@ -2423,7 +2516,7 @@ impl FunctionLayer {
                 .floor()
                 + pixel_shift_x
                 + (pixel_shift_width / 2) as f64
-                + origin_x;
+                + panel_origin;
 
             let button_width = ((item.end - item.start) * virtual_button_width).floor();
 
@@ -2929,6 +3022,7 @@ fn real_main(drm: &mut DrmBackend) {
     let mut digitizer: Option<InputDevice> = None;
     let mut touches = HashMap::new();
     let mut last_volume_tap: Option<Instant> = None;
+    let mut pullout_anim: Option<PulloutAnim> = None;
     let mut last_redraw_ts = if layers[active_layer].faster_refresh {
         Local::now().second()
     } else {
@@ -3021,6 +3115,25 @@ fn real_main(drm: &mut DrmBackend) {
                 }
             }
             next_timeout_ms = min(next_timeout_ms, 50);
+        }
+
+        // Advance a running pullout slide: update the reveal, keep redrawing at
+        // ~60fps until it settles, then hand a finished collapse back to the
+        // parent layer.
+        if let Some(anim) = &pullout_anim {
+            let now = Instant::now();
+            layers[anim.panel].overlay_reveal = anim.reveal(now);
+            needs_complete_redraw = true;
+            if anim.done(now) {
+                if anim.collapsing {
+                    normal_layer = anim.parent;
+                    active_layer = anim.parent;
+                }
+                layers[anim.panel].overlay_reveal = 1.0;
+                pullout_anim = None;
+            } else {
+                next_timeout_ms = min(next_timeout_ms, 16);
+            }
         }
 
         // A pullout panel composites over its parent, so redraw the whole thing
@@ -3150,6 +3263,8 @@ fn real_main(drm: &mut DrmBackend) {
                         continue;
                     }
                     match te {
+                        // Ignore new touches mid-slide; positions are in flux.
+                        TouchEvent::Down(_) if pullout_anim.is_some() => {}
                         TouchEvent::Down(dn) => {
                             let x = dn.x_transformed(width as u32);
                             let y = dn.y_transformed(height as u32);
@@ -3314,8 +3429,26 @@ fn real_main(drm: &mut DrmBackend) {
                                     if layers[target_layer].displays_notifications {
                                         notification_return_layer = normal_layer;
                                     }
-                                    normal_layer = target_layer;
-                                    active_layer = normal_layer;
+                                    // Pullout expand/collapse slides; everything
+                                    // else switches instantly. A collapse keeps
+                                    // normal_layer until the slide-out finishes.
+                                    let (active_now, anim) = begin_layer_switch(
+                                        &layers,
+                                        active_layer,
+                                        target_layer,
+                                        Instant::now(),
+                                    );
+                                    let collapsing =
+                                        anim.as_ref().map(|a| a.collapsing).unwrap_or(false);
+                                    if !collapsing {
+                                        normal_layer = target_layer;
+                                    }
+                                    if let Some(a) = &anim {
+                                        layers[a.panel].overlay_reveal =
+                                            a.reveal(Instant::now());
+                                    }
+                                    active_layer = active_now;
+                                    pullout_anim = anim;
                                     needs_complete_redraw = true;
                                 } else {
                                     eprintln!("LayerToggle target '{}' does not exist", target);
@@ -3400,7 +3533,125 @@ mod tests {
             faster_refresh: false,
             overlay_parent: None,
             overlay_coverage: 0.0,
+            overlay_reveal: 1.0,
         }
+    }
+
+    #[test]
+    fn pullout_panel_hits_child_buttons() {
+        // Panel = ">" toggle + interactive children, laid out over the right
+        // slice of the parent (coverage 0.66).
+        let child = |t: &str| ButtonConfig {
+            text: Some(t.to_string()),
+            action: vec![Key::A],
+            ..ButtonConfig::default()
+        };
+        let toggle = ButtonConfig {
+            button: Some("pullout_toggle".to_string()),
+            text: Some(">".to_string()),
+            layer_toggle: Some("SystemInfo".to_string()),
+            ..ButtonConfig::default()
+        };
+        let mut panel = FunctionLayer::with_config(
+            "SystemInfo__pullout",
+            vec![toggle, child("cpu"), child("mem"), child("bat"), child("time")],
+        );
+        panel.set_overlay("SystemInfo".to_string(), 0.66);
+
+        let (width, height) = (1000u16, 60u16);
+        let origin_x = panel.overlay_origin(width as f64);
+        let y = height as f64 * 0.5;
+
+        // The ">" toggle sits at the far left of the panel and must hit.
+        let mid_toggle = origin_x + 1.0;
+        assert_eq!(
+            panel.hit(width, height, mid_toggle, y, None, None),
+            Some(0),
+            "\">\" toggle should be hittable"
+        );
+
+        // Each interactive child must be hittable at its centre.
+        let spans = panel.button_spans(None);
+        let visible = panel.buttons.len();
+        let total_spacing = BUTTON_SPACING_PX as f64 * (visible - 1) as f64;
+        let vbw = (width as f64 - origin_x - total_spacing) / panel.virtual_button_count;
+        for (i, (start, end)) in spans.iter().enumerate() {
+            let left = start * vbw + i as f64 * BUTTON_SPACING_PX as f64 + origin_x;
+            let right = left + (end - start) * vbw;
+            let cx = (left + right) / 2.0;
+            assert_eq!(
+                panel.hit(width, height, cx, y, None, None),
+                Some(i),
+                "child button {i} at x={cx} should hit"
+            );
+        }
+    }
+
+    #[test]
+    fn pullout_slide_reveals_over_its_duration() {
+        let start = Instant::now();
+        let expand = PulloutAnim {
+            panel: 1,
+            parent: 0,
+            collapsing: false,
+            start,
+        };
+        assert!(expand.reveal(start).abs() < 1e-9, "expand starts hidden");
+        assert!(
+            (expand.reveal(start + PULLOUT_ANIM) - 1.0).abs() < 1e-9,
+            "expand ends fully revealed"
+        );
+        assert!(!expand.done(start));
+        assert!(expand.done(start + PULLOUT_ANIM));
+
+        let collapse = PulloutAnim {
+            collapsing: true,
+            start,
+            ..expand
+        };
+        assert!(
+            (collapse.reveal(start) - 1.0).abs() < 1e-9,
+            "collapse starts fully revealed"
+        );
+        assert!(
+            collapse.reveal(start + PULLOUT_ANIM).abs() < 1e-9,
+            "collapse ends hidden"
+        );
+    }
+
+    #[test]
+    fn begin_layer_switch_animates_only_pullout_transitions() {
+        let btn = |t: &str| ButtonConfig {
+            text: Some(t.to_string()),
+            action: vec![Key::A],
+            ..ButtonConfig::default()
+        };
+        let parent = FunctionLayer::with_config("SystemInfo", vec![btn("a")]);
+        let mut panel =
+            FunctionLayer::with_config("SystemInfo__pullout", vec![btn(">"), btn("cpu")]);
+        panel.set_overlay("SystemInfo".to_string(), 0.66);
+        let plain = FunctionLayer::with_config("Media", vec![btn("m")]);
+        let layers = vec![parent, panel, plain];
+        let now = Instant::now();
+
+        // parent (0) -> panel (1): expand — panel active, slides in.
+        let (active, anim) = begin_layer_switch(&layers, 0, 1, now);
+        assert_eq!(active, 1);
+        let a = anim.expect("expand should animate");
+        assert!(!a.collapsing);
+        assert_eq!((a.panel, a.parent), (1, 0));
+
+        // panel (1) -> parent (0): collapse — panel stays active, slides out.
+        let (active, anim) = begin_layer_switch(&layers, 1, 0, now);
+        assert_eq!(active, 1);
+        let a = anim.expect("collapse should animate");
+        assert!(a.collapsing);
+        assert_eq!((a.panel, a.parent), (1, 0));
+
+        // parent (0) -> Media (2): a normal layer switch is instant.
+        let (active, anim) = begin_layer_switch(&layers, 0, 2, now);
+        assert_eq!(active, 2);
+        assert!(anim.is_none());
     }
 
     #[test]
@@ -3548,6 +3799,7 @@ mod tests {
             faster_refresh: false,
             overlay_parent: None,
             overlay_coverage: 0.0,
+            overlay_reveal: 1.0,
         };
 
         assert_eq!(
@@ -3571,6 +3823,7 @@ mod tests {
             faster_refresh: false,
             overlay_parent: None,
             overlay_coverage: 0.0,
+            overlay_reveal: 1.0,
         };
 
         assert_eq!(layer.hit(100, 30, 50.0, 15.0, None, None), Some(0));
