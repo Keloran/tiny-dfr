@@ -51,5 +51,6 @@ pub fn notification_layer() -> FunctionLayer {
         overlay_parent: None,
         overlay_coverage: 0.0,
         overlay_reveal: 1.0,
+        overlay_slide_start_x: None,
     }
 }

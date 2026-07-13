@@ -187,6 +187,7 @@ fn fractional_stretch_is_preserved_in_layer_spans() {
         overlay_parent: None,
         overlay_coverage: 0.0,
         overlay_reveal: 1.0,
+        overlay_slide_start_x: None,
     };
 
     assert_eq!(
@@ -211,6 +212,7 @@ fn active_window_button_is_hittable_for_toggle() {
         overlay_parent: None,
         overlay_coverage: 0.0,
         overlay_reveal: 1.0,
+        overlay_slide_start_x: None,
     };
 
     assert_eq!(layer.hit(100, 30, 50.0, 15.0, None, None), Some(0));
