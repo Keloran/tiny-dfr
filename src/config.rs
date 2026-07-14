@@ -169,6 +169,42 @@ mod tests {
     }
 
     #[test]
+    fn pullout_child_layer_toggle_target_is_collected() {
+        // A pullout child that opens its own sub-layer (LayerToggle + Children).
+        let sub_toggle = ButtonConfig {
+            text: Some("open".to_string()),
+            layer_toggle: Some("SubLayer".to_string()),
+            children: Some(vec![ButtonConfig {
+                text: Some("inner".to_string()),
+                ..ButtonConfig::default()
+            }]),
+            ..ButtonConfig::default()
+        };
+        let keys = vec![
+            ButtonConfig {
+                text: Some("title".to_string()),
+                ..ButtonConfig::default()
+            },
+            ButtonConfig {
+                button: Some("pullout".to_string()),
+                children: Some(vec![sub_toggle]),
+                ..ButtonConfig::default()
+            },
+        ];
+
+        // load_config collects child layers BEFORE expanding pullouts.
+        let mut child_layers = Vec::new();
+        collect_child_layers(&keys, &mut child_layers);
+        let (_collapsed, _pullout) = expand_pullout("SystemInfo", keys);
+
+        assert!(
+            child_layers.iter().any(|(name, _)| name == "SubLayer"),
+            "pullout child's LayerToggle target 'SubLayer' was never collected, \
+             so pressing it does nothing"
+        );
+    }
+
+    #[test]
     fn pullout_splits_into_collapsed_and_expanded() {
         let text = |t: &str| ButtonConfig {
             text: Some(t.to_string()),
@@ -287,7 +323,16 @@ fn collect_child_layers(buttons: &[ButtonConfig], layers: &mut Vec<(String, Vec<
                     child.colorize = true;
                 }
             }
+            // Descend first so a LayerToggle nested inside these children (or
+            // inside a pullout further down) also gets its layer created.
+            collect_child_layers(&children, layers);
             layers.push((target.clone(), children));
+        } else if let Some(children) = &button.children {
+            // A pullout marker holds its buttons in `children` without a
+            // `layer_toggle` of its own. expand_pullout later turns those into
+            // an overlay panel, but any LayerToggle among them still needs its
+            // target layer collected here, or pressing it does nothing.
+            collect_child_layers(children, layers);
         }
     }
 }

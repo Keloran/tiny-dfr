@@ -29,8 +29,9 @@ pub struct NotificationManager {
 }
 
 impl NotificationManager {
-    #[cfg(test)]
-    pub(crate) fn with_count(count: usize) -> NotificationManager {
+    // Test scaffolding (also used by the integration tests in tests/), so it
+    // must be part of the public API rather than #[cfg(test)]-only.
+    pub fn with_count(count: usize) -> NotificationManager {
         NotificationManager {
             notifications: (0..count)
                 .map(|id| Notification {
@@ -47,8 +48,7 @@ impl NotificationManager {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_actions(labels: &[&str]) -> NotificationManager {
+    pub fn with_actions(labels: &[&str]) -> NotificationManager {
         NotificationManager {
             notifications: vec![Notification {
                 id: 1,

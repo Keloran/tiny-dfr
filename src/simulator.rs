@@ -18,6 +18,7 @@ use minifb::{Key as MKey, MouseButton, MouseMode, ScaleMode, Window, WindowOptio
 use std::{
     fs::{File, OpenOptions},
     path::PathBuf,
+    time::Instant,
 };
 
 const DEFAULT_WIDTH: usize = 1710;
@@ -167,8 +168,23 @@ pub fn run() {
     // Currently-held press: (layer, button index, is_slider).
     let mut pressed: Option<(usize, usize, bool)> = None;
     let mut prev_mouse_down = false;
+    // In-progress pullout slide, if any.
+    let mut pullout_anim: Option<crate::PulloutAnim> = None;
 
     while window.is_open() && !window.is_key_down(MKey::Escape) {
+        // Advance a running pullout slide before choosing the active layer, so a
+        // finished collapse hands back to the parent this frame.
+        if let Some(anim) = &pullout_anim {
+            let now = Instant::now();
+            layers[anim.panel].overlay_reveal = anim.reveal(now);
+            if anim.done(now) {
+                if anim.collapsing {
+                    selected_layer = anim.parent;
+                }
+                layers[anim.panel].overlay_reveal = 1.0;
+                pullout_anim = None;
+            }
+        }
         // Resize the render surface to the current window size.
         let (nw, nh) = window.get_size();
         if nw > 0 && nh > 0 && (nw, nh) != (cw, ch) {
@@ -246,7 +262,7 @@ pub fn run() {
         let mouse_down = window.get_mouse_down(MouseButton::Left);
         let pos = window.get_mouse_pos(MouseMode::Clamp);
 
-        if mouse_down && !prev_mouse_down {
+        if mouse_down && !prev_mouse_down && pullout_anim.is_none() {
             if let Some((mx, my)) = pos {
                 let notif = layers[active]
                     .displays_notifications
@@ -309,7 +325,14 @@ pub fn run() {
                         .map(str::to_string)
                     {
                         if let Some(idx) = layer_index(&layers, &target) {
-                            selected_layer = idx;
+                            let now = Instant::now();
+                            let (active_now, anim) =
+                                crate::begin_layer_switch(&layers, layer, idx, now);
+                            if let Some(a) = &anim {
+                                layers[a.panel].overlay_reveal = a.reveal(now);
+                            }
+                            selected_layer = active_now;
+                            pullout_anim = anim;
                         }
                     }
                 }
