@@ -217,3 +217,38 @@ fn active_window_button_is_hittable_for_toggle() {
 
     assert_eq!(layer.hit(100, 30, 50.0, 15.0, None, None), Some(0));
 }
+
+#[test]
+fn active_workspace_button_with_command_is_hittable() {
+    // hit() has no SystemInfoManager, so is_visible() can't confirm an
+    // ActiveWorkspace button is showing. It must still be hittable when it
+    // carries a Command/Action, or the configured command never runs.
+    let with_command = Button {
+        command: Some("hyprctl dispatch gloview:toggle".to_string()),
+        ..test_button(ButtonImage::ActiveWorkspace(None, false))
+    };
+    let layer = FunctionLayer {
+        name: "SystemInfo".to_string(),
+        displays_time: false,
+        displays_battery: false,
+        displays_sysinfo: true,
+        displays_slider: false,
+        displays_weather: false,
+        displays_notifications: false,
+        buttons: vec![(0.0, with_command)],
+        virtual_button_count: 1.0,
+        faster_refresh: false,
+        overlay_parent: None,
+        overlay_coverage: 0.0,
+        overlay_reveal: 1.0,
+        overlay_slide_start_x: None,
+    };
+    assert_eq!(layer.hit(100, 30, 50.0, 15.0, None, None), Some(0));
+
+    // Without a command or action there is nothing to do, so it stays inert.
+    let inert = FunctionLayer {
+        buttons: vec![(0.0, test_button(ButtonImage::ActiveWorkspace(None, false)))],
+        ..layer
+    };
+    assert_eq!(inert.hit(100, 30, 50.0, 15.0, None, None), None);
+}

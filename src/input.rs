@@ -79,7 +79,7 @@ pub(crate) fn open_drm_backend(report_final_failure: bool) -> Option<DrmBackend>
             Err(err) => {
                 last_error = Some(err);
                 if attempt < DRM_OPEN_ATTEMPTS {
-                    eprintln!(
+                    log_line!(
                         "Touch Bar DRM device unavailable, retrying ({attempt}/{DRM_OPEN_ATTEMPTS})"
                     );
                     std::thread::sleep(DRM_OPEN_RETRY_DELAY);
@@ -89,10 +89,10 @@ pub(crate) fn open_drm_backend(report_final_failure: bool) -> Option<DrmBackend>
     }
 
     if let Some(err) = last_error {
-        eprintln!("Touch Bar DRM device unavailable after retries: {err}");
+        log_line!("Touch Bar DRM device unavailable after retries: {err}");
     }
     if report_final_failure {
-        eprintln!(
+        log_line!(
             "Not restarting automatically; fix the DRM owner/seat and restart tiny-dfr.service"
         );
     }
@@ -104,20 +104,20 @@ pub(crate) fn try_touchbar_usb_recovery() {
         .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
         .unwrap_or(false);
     if !recovery_enabled {
-        eprintln!(
+        log_line!(
             "Touch Bar DRM device unavailable; skipping T2 USB reset. Set {T2_USB_RECOVERY_ENV}=1 to enable recovery."
         );
         return;
     }
 
     if !is_t2_macbook() {
-        eprintln!("Touch Bar DRM device unavailable and this does not look like a T2 MacBook");
+        log_line!("Touch Bar DRM device unavailable and this does not look like a T2 MacBook");
         return;
     }
 
-    eprintln!("Touch Bar DRM device unavailable; trying T2 Touch Bar USB recovery");
+    log_line!("Touch Bar DRM device unavailable; trying T2 Touch Bar USB recovery");
     let mut touchbar = T2TouchBar::new();
     if let Err(err) = touchbar.initialize() {
-        eprintln!("T2 Touch Bar USB recovery failed: {err}");
+        log_line!("T2 Touch Bar USB recovery failed: {err}");
     }
 }

@@ -262,7 +262,7 @@ impl FunctionLayer {
                 let i = **state;
                 let mut stretch = cfg.stretch.unwrap_or(1.0);
                 if stretch < 0.5 {
-                    println!("Stretch value must be at least 0.5, setting to 0.5.");
+                    log_line!("Stretch value must be at least 0.5, setting to 0.5.");
                     stretch = 0.5;
                 }
                 **state += stretch;
@@ -677,7 +677,14 @@ impl FunctionLayer {
                 if !self.buttons[button_index].1.is_interactive() {
                     return None;
                 }
-                if self.buttons[button_index].1.is_active_window() {
+                // ActiveWindow / ActiveWorkspace visibility depends on
+                // desktop-info state that hit() can't see (it passes None for
+                // the SystemInfoManager, so the is_visible() check below would
+                // treat them as hidden and drop the touch). They already passed
+                // the is_interactive() gate above, so honor the press.
+                if self.buttons[button_index].1.is_active_window()
+                    || self.buttons[button_index].1.is_active_workspace()
+                {
                     return Some(button_index);
                 }
                 if !self.buttons[button_index]

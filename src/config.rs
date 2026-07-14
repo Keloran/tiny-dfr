@@ -34,7 +34,8 @@ pub struct Config {
     pub font_size: f64,
     pub adaptive_brightness: bool,
     pub active_brightness: u32,
-    pub double_press_switch_layers: u32,
+    pub double_press: Vec<DoublePressConfig>,
+    pub logging: bool,
     pub drop_privileges: bool,
     pub weather_location: Option<String>,
     pub weather_fahrenheit: bool,
@@ -50,7 +51,8 @@ struct ConfigProxy {
     font_size: Option<f64>,
     adaptive_brightness: Option<bool>,
     active_brightness: Option<u32>,
-    double_press_switch_layers: Option<u32>,
+    double_press: Option<Vec<DoublePressConfig>>,
+    logging: Option<bool>,
     drop_privileges: Option<bool>,
     weather_location: Option<String>,
     weather_units: Option<String>,
@@ -69,9 +71,8 @@ impl ConfigProxy {
         self.font_size = other.font_size.or(self.font_size);
         self.adaptive_brightness = other.adaptive_brightness.or(self.adaptive_brightness);
         self.active_brightness = other.active_brightness.or(self.active_brightness);
-        self.double_press_switch_layers = other
-            .double_press_switch_layers
-            .or(self.double_press_switch_layers);
+        self.double_press = other.double_press.or(self.double_press.take());
+        self.logging = other.logging.or(self.logging);
         self.drop_privileges = other.drop_privileges.or(self.drop_privileges);
         self.weather_location = other.weather_location.or(self.weather_location.take());
         self.weather_units = other.weather_units.or(self.weather_units.take());
@@ -114,6 +115,17 @@ where
     }
 
     deserializer.deserialize_any(ArrayOrSingle)
+}
+
+// A double-press-FN mapping. Each `[[DoublePress]]` entry latches its `Layer`
+// as the resting (FN-released) layer when FN is tapped twice within
+// `ListenTime` milliseconds. With multiple entries, successive double-presses
+// cycle through them, then back to the default layer.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct DoublePressConfig {
+    pub listen_time: u32,
+    pub layer: String,
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -166,6 +178,27 @@ mod tests {
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].0, "Child");
         assert!(layers[0].1[0].colorize);
+    }
+
+    #[test]
+    fn double_press_parses_both_block_and_inline_forms() {
+        // Inline array-of-tables (used in the example configs).
+        let inline: ConfigProxy =
+            toml::from_str(r#"DoublePress = [ { ListenTime = 200, Layer = "Media" } ]"#).unwrap();
+        let dp = inline.double_press.unwrap();
+        assert_eq!(dp.len(), 1);
+        assert_eq!(dp[0].listen_time, 200);
+        assert_eq!(dp[0].layer, "Media");
+
+        // TOML [[DoublePress]] block form, cycling through two layers.
+        let block: ConfigProxy = toml::from_str(
+            "[[DoublePress]]\nListenTime = 250\nLayer = \"Media\"\n\
+             [[DoublePress]]\nListenTime = 250\nLayer = \"FKeys\"\n",
+        )
+        .unwrap();
+        let dp = block.double_press.unwrap();
+        assert_eq!(dp.len(), 2);
+        assert_eq!(dp[1].layer, "FKeys");
     }
 
     #[test]
@@ -280,7 +313,7 @@ fn expand_pullout(name: &str, keys: Vec<ButtonConfig>) -> (Vec<ButtonConfig>, Op
         .iter()
         .any(|b| matches!(b.button.as_deref(), Some("pullout" | "Pullout")))
     {
-        eprintln!("Layer '{name}' has multiple pullout markers; only the first is used");
+        log_line!("Layer '{name}' has multiple pullout markers; only the first is used");
     }
     let children = keys[m].children.clone().unwrap_or_default();
     let visible = keys[m]
@@ -378,7 +411,7 @@ fn load_config(_width: u16) -> (Config, Vec<FunctionLayer>) {
         }) {
             Ok(config) => base.merge(config),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => eprintln!("Failed to load config {}: {err}", path.display()),
+            Err(err) => log_line!("Failed to load config {}: {err}", path.display()),
         }
     }
     let mut primary_layer_keys = base.primary_layer_keys.unwrap();
@@ -439,7 +472,7 @@ fn load_config(_width: u16) -> (Config, Vec<FunctionLayer>) {
                 "Media" => "MediaLayerKeys",
                 _ => unreachable!(),
             };
-            eprintln!(
+            log_line!(
                 "Warning: Layers.{} ignored; use {} for built-in layers",
                 name, key_name
             );
@@ -449,7 +482,7 @@ fn load_config(_width: u16) -> (Config, Vec<FunctionLayer>) {
     }
     let default_layer = base.default_layer.as_deref().unwrap_or("SystemInfo");
     if !layers.iter().any(|layer| layer.name == default_layer) {
-        eprintln!(
+        log_line!(
             "Warning: Invalid DefaultLayer '{}', using SystemInfo",
             default_layer
         );
@@ -466,7 +499,8 @@ fn load_config(_width: u16) -> (Config, Vec<FunctionLayer>) {
         font_face: load_font(&base.font_template.unwrap()),
         font_size: base.font_size.unwrap_or(32.0),
         active_brightness: base.active_brightness.unwrap(),
-        double_press_switch_layers: base.double_press_switch_layers.unwrap(),
+        double_press: base.double_press.unwrap_or_default(),
+        logging: base.logging.unwrap_or(false),
         drop_privileges: base.drop_privileges.unwrap_or(true),
         weather_location: base.weather_location,
         weather_fahrenheit: base
@@ -479,6 +513,9 @@ fn load_config(_width: u16) -> (Config, Vec<FunctionLayer>) {
             })
             .unwrap_or(false),
     };
+    // Apply the logging switch on every load (initial and reload) so the daemon
+    // goes quiet — or starts logging — the moment the config changes.
+    crate::logging::set_logging_enabled(cfg.logging);
     (cfg, layers)
 }
 

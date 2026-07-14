@@ -92,7 +92,7 @@ impl BacklightManager {
     pub fn new() -> BacklightManager {
         let bl_path = find_backlight().unwrap();
         let display_bl_path = find_display_backlight()
-            .inspect_err(|e| eprintln!("Failed to find display backlight sysfs path: {e}"))
+            .inspect_err(|e| log_line!("Failed to find display backlight sysfs path: {e}"))
             .ok();
         let bl_file = OpenOptions::new()
             .write(true)
@@ -121,7 +121,7 @@ impl BacklightManager {
             Event::Switch(SwitchEvent::Toggle(toggle)) => {
                 if let Some(Switch::Lid) = toggle.switch() {
                     self.lid_state = toggle.switch_state();
-                    println!("Lid Switch event: {:?}", self.lid_state);
+                    log_line!("Lid Switch event: {:?}", self.lid_state);
                     if toggle.switch_state() == SwitchState::Off {
                         self.last_active = Instant::now();
                     }

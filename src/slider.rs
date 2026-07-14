@@ -189,7 +189,7 @@ impl Slider {
     fn spawn(&mut self, mut command: Command) {
         match command.spawn() {
             Ok(child) => self.children.push(child),
-            Err(e) => eprintln!("TINY-DFR: failed to spawn slider command: {e}"),
+            Err(e) => log_line!("TINY-DFR: failed to spawn slider command: {e}"),
         }
     }
 

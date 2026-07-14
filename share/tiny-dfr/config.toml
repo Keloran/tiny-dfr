@@ -36,10 +36,20 @@ AdaptiveBrightness = true
 # Accepted values are 0-255
 ActiveBrightness = 128
 
-# With a quick double press of the FN key switch the default layer.
-# 0 disables the feature, >0 defines how quick the double press must be in ms.
-# A sensible value to try is around 200.
-DoublePressSwitchLayers = 0
+# Emit diagnostics to the journal (button presses, command execution, device
+# recovery, config warnings). Off by default to keep the journal quiet; set to
+# true when debugging. Applied live on config reload.
+Logging = false
+
+# Double-press the FN key to latch a custom layer as the resting (FN-released)
+# view. ListenTime is how quick the double press must be, in ms (~200 is a
+# sensible value); Layer is the layer name to latch. Double-press again to
+# return to the default layer; holding FN still shows F-keys as usual. List
+# several entries to cycle through them on successive double-presses. Omit
+# DoublePress entirely (as below) to disable the feature.
+# DoublePress = [
+#     { ListenTime = 200, Layer = "Media" },
+# ]
 
 # ESC is no longer added automatically. Add an ESC button to any layer that
 # wants one with `{ Text = "esc", Action = "Esc" }` (see the layers below).
