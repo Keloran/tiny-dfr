@@ -1321,7 +1321,7 @@ impl Button {
             match option.as_deref().and_then(SliderKind::parse) {
                 Some(kind) => Button::new_slider(kind, cfg.theme.as_deref(), cfg.colorize),
                 None => {
-                    eprintln!(
+                    log_line!(
                         "Unknown Slider option '{}'; expected display_brightness, keyboard_backlight, or volume",
                         option.unwrap_or_default()
                     );
@@ -1337,7 +1337,7 @@ impl Button {
                     cfg.colorize,
                 ),
                 weather => {
-                    eprintln!(
+                    log_line!(
                         "Unknown Weather option '{}'; expected current or forecast",
                         weather
                     );
@@ -1873,7 +1873,7 @@ impl Button {
             ButtonImage::Battery(_, _, _, _) => "Battery",
             _ => "Other",
         };
-        eprintln!(
+        log_line!(
             "TINY-DFR DEBUG: set_active called: button={}, active={}, has_command={}",
             button_type,
             active,
@@ -1890,13 +1890,13 @@ impl Button {
                 // Execute command on button press (not release)
                 if active {
                     if let Some(cmd_str) = &self.command {
-                        eprintln!("TINY-DFR DEBUG: Executing command: {}", cmd_str);
+                        log_line!("TINY-DFR DEBUG: Executing command: {}", cmd_str);
 
                         // Build command with environment variables from current process
                         // If running as root and we have SUDO_UID, run command as that user
                         let mut command = if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
                             if let Ok(sudo_user) = std::env::var("SUDO_USER") {
-                                eprintln!(
+                                log_line!(
                                     "TINY-DFR DEBUG: Running command as user {} (UID {})",
                                     sudo_user, sudo_uid
                                 );
@@ -1939,21 +1939,21 @@ impl Button {
                             env_debug.push_str("HYPRLAND_INSTANCE_SIGNATURE=<not set> ");
                         }
 
-                        eprintln!("TINY-DFR DEBUG: Environment: {}", env_debug);
+                        log_line!("TINY-DFR DEBUG: Environment: {}", env_debug);
 
                         match command.spawn() {
                             Ok(child) => {
-                                eprintln!(
+                                log_line!(
                                     "TINY-DFR DEBUG: Command spawned with PID: {:?}",
                                     child.id()
                                 );
                             }
                             Err(e) => {
-                                eprintln!("TINY-DFR DEBUG: Failed to spawn command: {}", e);
+                                log_line!("TINY-DFR DEBUG: Failed to spawn command: {}", e);
                             }
                         }
                     } else {
-                        eprintln!("TINY-DFR DEBUG: Button pressed but no command set");
+                        log_line!("TINY-DFR DEBUG: Button pressed but no command set");
                     }
                 }
             }
@@ -2003,6 +2003,9 @@ impl Button {
     }
     pub fn is_active_window(&self) -> bool {
         matches!(self.image, ButtonImage::ActiveWindow(_, _))
+    }
+    pub fn is_active_workspace(&self) -> bool {
+        matches!(self.image, ButtonImage::ActiveWorkspace(_, _))
     }
     pub fn supports_hold(&self) -> bool {
         matches!(self.notification_kind(), Some(NotificationButton::Text))

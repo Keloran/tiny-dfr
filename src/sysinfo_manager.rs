@@ -38,7 +38,7 @@ fn setup_hyprland_env() -> Option<String> {
         let runtime_dir = format!("/run/user/{sudo_uid}");
         if let Some(signature) = find_hyprland_signature_in_runtime(&runtime_dir) {
             set_hyprland_env(&runtime_dir, &signature);
-            println!("Hyprland detected via SUDO_UID runtime dir: {runtime_dir}");
+            log_line!("Hyprland detected via SUDO_UID runtime dir: {runtime_dir}");
             return hyprland_socket_from_env();
         }
     }
@@ -46,7 +46,7 @@ fn setup_hyprland_env() -> Option<String> {
     // Try scanning /proc for Hyprland process
     if let Some((runtime_dir, signature)) = find_hyprland_env_in_proc() {
         set_hyprland_env(&runtime_dir, &signature);
-        println!("Hyprland detected via process environment: {runtime_dir}");
+        log_line!("Hyprland detected via process environment: {runtime_dir}");
         return hyprland_socket_from_env();
     }
 
@@ -58,7 +58,7 @@ fn setup_hyprland_env() -> Option<String> {
                 find_hyprland_signature_in_runtime(runtime_dir.to_string_lossy().as_ref())
             {
                 set_hyprland_env(runtime_dir.to_string_lossy().as_ref(), &signature);
-                println!(
+                log_line!(
                     "Hyprland detected via runtime dir: {}",
                     runtime_dir.display()
                 );
@@ -399,7 +399,7 @@ fn get_hyprland_info() -> (String, String, bool) {
             .map(|title| title.trim().to_string())
             .unwrap_or_else(|| "Desktop".to_string()),
         Err(err) => {
-            println!("Hyprland active-window query failed: {}", err);
+            log_line!("Hyprland active-window query failed: {}", err);
             return (String::new(), String::new(), false);
         }
     };
@@ -413,7 +413,7 @@ fn get_hyprland_info() -> (String, String, bool) {
             .or_else(|| value.get("id").map(|id| id.to_string()))
             .unwrap_or_default(),
         Err(err) => {
-            println!("Hyprland workspace query failed: {}", err);
+            log_line!("Hyprland workspace query failed: {}", err);
             return (active_window, String::new(), false);
         }
     };
@@ -727,7 +727,7 @@ impl SystemInfoManager {
                         notify_desktop_probe(&mut desktop_probe_tx);
                         let err = err.to_string();
                         if last_cosmic_error.as_deref() != Some(err.as_str()) {
-                            println!("Cosmic desktop info unavailable: {err}");
+                            log_line!("Cosmic desktop info unavailable: {err}");
                             last_cosmic_error = Some(err);
                         }
                         thread::sleep(Duration::from_secs(2));
@@ -764,7 +764,7 @@ impl SystemInfoManager {
                     notify_desktop_probe(&mut desktop_probe_tx);
                     let err = err.to_string();
                     if last_cosmic_error.as_deref() != Some(err.as_str()) {
-                        println!("Cosmic desktop info unavailable: {err}");
+                        log_line!("Cosmic desktop info unavailable: {err}");
                         last_cosmic_error = Some(err);
                     }
                     thread::sleep(Duration::from_secs(2));

@@ -61,7 +61,7 @@ impl T2TouchBar {
             // Check if this is the Touch Bar (Apple 05ac:8302)
             if vendor == "05ac" && product == "8302" {
                 self.usb_device_path = path.to_string_lossy().to_string();
-                println!("Found T2 Touch Bar at: {}", self.usb_device_path);
+                log_line!("Found T2 Touch Bar at: {}", self.usb_device_path);
                 return Ok(());
             }
         }
@@ -92,7 +92,7 @@ impl T2TouchBar {
             .map_err(|_| anyhow!("Failed to parse device number"))?;
 
         let usb_device = format!("/dev/bus/usb/{:03}/{:03}", bus, dev);
-        println!("Resetting USB device: {}", usb_device);
+        log_line!("Resetting USB device: {}", usb_device);
 
         let file = File::options()
             .write(true)
@@ -112,7 +112,7 @@ impl T2TouchBar {
             }
         }
 
-        println!("USB reset successful");
+        log_line!("USB reset successful");
         Ok(())
     }
 
@@ -138,20 +138,20 @@ impl T2TouchBar {
     /// 2. Reset USB device
     /// 3. Wait for kernel to bind appletbdrm
     pub fn initialize(&mut self) -> Result<()> {
-        println!("Waiting for T2 Touch Bar enumeration...");
+        log_line!("Waiting for T2 Touch Bar enumeration...");
         self.wait_for_enumeration(30)?;
 
-        println!("Performing USB reset...");
+        log_line!("Performing USB reset...");
         if let Err(e) = self.reset() {
-            eprintln!("Warning: USB reset failed: {}", e);
-            eprintln!("Device may already be initialized, continuing anyway...");
+            log_line!("Warning: USB reset failed: {}", e);
+            log_line!("Device may already be initialized, continuing anyway...");
         } else {
-            println!("USB reset successful");
+            log_line!("USB reset successful");
         }
 
         // Give the kernel extra time to re-enumerate and bind the driver
         // This is critical - the USB subsystem needs time to stabilize
-        println!("Waiting for driver binding...");
+        log_line!("Waiting for driver binding...");
         thread::sleep(Duration::from_secs(5));
 
         // Wait for DRM device to appear
@@ -162,7 +162,7 @@ impl T2TouchBar {
                 if let Ok(entries) = fs::read_dir("/dev/dri") {
                     for entry in entries.flatten() {
                         if entry.file_name().to_string_lossy().starts_with("card") {
-                            println!("DRM device found: {}", entry.path().display());
+                            log_line!("DRM device found: {}", entry.path().display());
                             // Give USB subsystem additional time to stabilize
                             // This prevents input devices from being in a stuck state
                             thread::sleep(Duration::from_secs(2));
@@ -174,8 +174,8 @@ impl T2TouchBar {
             thread::sleep(Duration::from_millis(500));
         }
 
-        eprintln!("Warning: DRM device did not appear after USB reset");
-        eprintln!("Continuing anyway - you may need to manually restart tiny-dfr");
+        log_line!("Warning: DRM device did not appear after USB reset");
+        log_line!("Continuing anyway - you may need to manually restart tiny-dfr");
         Ok(()) // Don't fail - let the main loop try to continue
     }
 }

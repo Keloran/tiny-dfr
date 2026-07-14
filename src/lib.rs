@@ -28,6 +28,8 @@ use std::{
 };
 use udev::MonitorBuilder;
 
+#[macro_use]
+mod logging;
 mod backlight;
 mod button;
 mod config;
@@ -205,6 +207,9 @@ fn real_main(drm: &mut DrmBackend) {
     let mut digitizer: Option<InputDevice> = None;
     let mut touches = HashMap::new();
     let mut last_volume_tap: Option<Instant> = None;
+    // Which DoublePress entry is currently latched as the resting layer, if any.
+    // `None` means the normal default layer. Cycles None -> 0 -> 1 -> ... -> None.
+    let mut double_press_idx: Option<usize> = None;
     let mut pullout_anim: Option<PulloutAnim> = None;
     let mut last_redraw_ts = if layers[active_layer].faster_refresh {
         Local::now().second()
@@ -215,6 +220,7 @@ fn real_main(drm: &mut DrmBackend) {
         if cfg_mgr.update_config(&mut cfg, &mut layers, width) {
             normal_layer = layer_index(&layers, &cfg.default_layer).unwrap_or(0);
             active_layer = normal_layer;
+            double_press_idx = None;
             needs_complete_redraw = true;
         }
 
@@ -418,22 +424,38 @@ fn real_main(drm: &mut DrmBackend) {
                 }
                 Event::Keyboard(KeyboardEvent::Key(key)) => {
                     if key.key() == Key::Fn as u32 {
-                        if cfg.double_press_switch_layers > 0
-                            && layers.len() == 2
+                        // Double-press FN to latch a custom layer as the resting
+                        // (FN-released) layer. Successive double-presses cycle
+                        // through the configured DoublePress entries, then back
+                        // to the default. Holding FN still shows FKeys as usual.
+                        if !cfg.double_press.is_empty()
                             && key.key_state() == KeyState::Pressed
                         {
-                            if last.elapsed()
-                                < Duration::from_millis(cfg.double_press_switch_layers.into())
-                            {
-                                layers.swap(0, 1);
+                            let entries = &cfg.double_press;
+                            let next = match double_press_idx {
+                                None => Some(0),
+                                Some(i) if i + 1 < entries.len() => Some(i + 1),
+                                Some(_) => None,
+                            };
+                            // The window that governs this transition: the entry
+                            // being activated, or the current one when cycling off.
+                            let window = match next.or(double_press_idx) {
+                                Some(i) => entries[i].listen_time,
+                                None => 0,
+                            };
+                            if last.elapsed() < Duration::from_millis(window.into()) {
+                                double_press_idx = next;
                             }
                             last = Instant::now();
                         }
+                        // The resting layer: the latched DoublePress layer if one
+                        // is active (and exists), otherwise the normal default.
+                        let rest = double_press_idx
+                            .and_then(|i| layer_index(&layers, &cfg.double_press[i].layer))
+                            .unwrap_or(normal_layer);
                         let new_layer = match key.key_state() {
-                            KeyState::Pressed => {
-                                layer_index(&layers, "FKeys").unwrap_or(normal_layer)
-                            }
-                            KeyState::Released => normal_layer,
+                            KeyState::Pressed => layer_index(&layers, "FKeys").unwrap_or(rest),
+                            KeyState::Released => rest,
                         };
                         if active_layer != new_layer {
                             active_layer = new_layer;
@@ -644,7 +666,7 @@ fn real_main(drm: &mut DrmBackend) {
                                     pullout_anim = anim;
                                     needs_complete_redraw = true;
                                 } else {
-                                    eprintln!("LayerToggle target '{}' does not exist", target);
+                                    log_line!("LayerToggle target '{}' does not exist", target);
                                 }
                             }
                         }

@@ -10,7 +10,7 @@
 # - FontSize: Global and per-button font size customization
 # - Icons: Add visual icons to system info displays
 # - Command: Execute shell commands on button press
-# - DoublePressSwitchLayers: Quick layer switching
+# - DoublePress: Double-press FN to latch a custom layer
 #
 # Copy this to /etc/tiny-dfr/config.toml to use it.
 
@@ -30,9 +30,23 @@ FontSize = 20.0  # Global font size (can be overridden per-button)
 AdaptiveBrightness = true
 ActiveBrightness = 128
 
-# Double-press FN within 200ms to cycle through layers
-# Set to 0 to disable double-press layer switching
-DoublePressSwitchLayers = 200
+# Emit diagnostics to the journal (button presses, command execution, device
+# recovery, config warnings). Off by default; set true when debugging.
+Logging = false
+
+# Double-press FN within 200ms (ListenTime) to latch the given Layer as the
+# resting view. Double-press again to return to the default layer. Holding FN
+# still shows F-keys as usual. List more entries to cycle through several layers
+# on successive double-presses; omit DoublePress entirely to disable it.
+#
+# Equivalent TOML block form (must go at the end of the file, after all the
+# top-level *LayerKeys arrays):
+#   [[DoublePress]]
+#   ListenTime = 200
+#   Layer = "Media"
+DoublePress = [
+    { ListenTime = 200, Layer = "Media" },
+]
 
 # Keep root privileges for Hyprland IPC access
 # Set to false if Hyprland runs as your user and tiny-dfr runs with sudo

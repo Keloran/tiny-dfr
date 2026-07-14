@@ -24,8 +24,12 @@ FontTemplate = ":bold"
 AdaptiveBrightness = true
 ActiveBrightness = 128
 
-# FN has a fixed meaning in this config: show F-keys while held.
-DoublePressSwitchLayers = 0
+# Emit diagnostics to the journal. Off by default; set true when debugging.
+Logging = false
+
+# FN has a fixed meaning in this config: show F-keys while held. To also latch a
+# layer on double-press, add a DoublePress list, e.g.:
+# DoublePress = [ { ListenTime = 200, Layer = "Media" } ]
 
 # ESC is not added automatically; add `{ Text = "esc", Action = "Esc" }` to any
 # layer that should have one. This config leaves it off.
